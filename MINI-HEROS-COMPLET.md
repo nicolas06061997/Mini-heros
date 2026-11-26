@@ -1,0 +1,2089 @@
+# ⭐ Mini Héros — Dossier complet de l'application
+
+> Ce document contient **toute l'application** : présentation, fonctionnement, architecture, modèle de données, règles métier, puis **l'intégralité du code source** (chaque fichier, sans coupure).
+> Seule modification : la valeur de `FAMILY_KEY` (le nom secret du dossier familial dans Firebase, qui sert de mot de passe d'accès à la base) est remplacée par `"famille-XXXX-MASQUE"`. Les 4 icônes PNG sont des images binaires et ne sont pas incluses (elles reprennent le dessin de `icons/icon.svg`).
+
+---
+
+## 1. En résumé
+
+**Mini Héros** est une application web familiale (PWA, en français) qui motive les enfants avec un système de **missions → étoiles ⭐ → récompenses**. Elle tourne sur 3 appareils synchronisés en temps réel :
+
+- 📟 **Tablette des enfants** : les enfants (2 profils : Romain et Olivia par défaut) voient leurs étoiles, demandent la validation d'une mission, achètent des récompenses dans la boutique et lancent les chronos d'écran.
+- 📱 **GSM de Papa** et 📱 **GSM de Maman** : validation des missions, bonus, malus, cartons jaunes, tickets à donner, réglages.
+
+Caractéristiques techniques :
+- **Un seul fichier** `index.html` (HTML + CSS + JavaScript vanilla, aucun framework, aucune étape de build), environ 1 800 lignes.
+- **Synchronisation temps réel** via **Firebase Realtime Database** (plan gratuit Spark, SDK *compat* v10.12.2 chargé dynamiquement depuis gstatic). Sans configuration Firebase → **mode local** (localStorage).
+- **Installable** comme une vraie appli (Android/Chrome via `beforeinstallprompt`, iPhone/iPad via mode d'emploi Safari « Sur l'écran d'accueil ») grâce à `manifest.webmanifest`, aux icônes et au service worker `sw.js` (ouverture hors ligne).
+- Hébergement prévu : **GitHub Pages**.
+
+## 2. Fichiers du projet
+
+| Fichier | Rôle |
+|---|---|
+| `index.html` | Toute l'application (interface, styles, logique, synchro Firebase, sons, confettis, installation). |
+| `sw.js` | Service worker : cache des fichiers, ouverture hors ligne, réseau d'abord pour la page, cache d'abord pour le SDK Firebase et les polices ; ne touche jamais au trafic temps réel Firebase. |
+| `manifest.webmanifest` | Manifeste PWA (nom, couleurs `#7c3aed` / `#f5f3ff`, icônes, mode `standalone`). |
+| `icons/icon.svg` | Icône vectorielle (étoile jaune sur dégradé violet → rose). |
+| `icons/icon-192.png`, `icon-512.png`, `maskable-512.png`, `apple-touch-icon.png` | Icônes PNG (binaires, non incluses ici). |
+| `README.md` | Mise en route Firebase et installation. |
+
+## 3. Fonctionnalités détaillées
+
+### 3.1 Côté enfants (tablette)
+- **Accueil** : une grande carte par enfant (avatar émoji, couleur, nombre d'étoiles, barre de progression vers la prochaine récompense, carton jaune 🟨 éventuel, chrono en cours).
+- **Onglet Missions** : liste des missions (émoji, titre, points). Toucher une mission **envoie une demande** aux parents (« ⏳ Demande envoyée à Papa et Maman ! ») ; toucher à nouveau annule la demande. Les points ne sont crédités qu'après validation parentale.
+- **Onglet Boutique** : récompenses avec prix en étoiles. Si pas assez d'étoiles → secousse + « Encore N ⭐ ». Sinon confirmation, débit atomique des points, création d'un **ticket** 🎟️, confettis et sons.
+- **Tickets à chrono** (ex. « 30 min de tablette ») : l'enfant lance le chrono, qui s'affiche en **plein écran** (écran maintenu allumé via Wake Lock). Pause / reprise possibles. À la fin : alarme, vibration, écran « terminé ».
+- **Onglet Journal** : historique des gains, malus, achats de l'enfant.
+- Réactions en direct : quand un parent valide → confettis + son de victoire sur la tablette ; malus → flash rouge + son + vibration.
+
+### 3.2 Côté parents (Mode Parent)
+- Accès : sur un GSM parent, direct ; sur la tablette, via un **code PIN à 4 chiffres** (par défaut `1234`).
+- **✅ Validations** : demandes en attente (valider / refuser / tout valider), créditer directement une mission, donner un **bonus** libre (1 à 1000 ⭐ + motif).
+- **🟥 Malus** :
+  - **Carton jaune** : 1er = avertissement sans perte ; 2e = −10 ⭐ et remise à zéro du carton. Possibilité de retirer le carton.
+  - Malus prédéfinis (répondre, ne pas écouter, remarque à l'école, violence) et malus libre.
+  - Les points ne descendent **jamais sous 0** (plancher, signalé dans le journal).
+- **🎟️ Tickets** : tickets à donner (marquer comme donné), chronos en cours (pause/reprise/terminer à distance), derniers tickets donnés, **journal de la famille** (40 dernières entrées).
+- **⚙️ Réglages** : rôle de l'appareil (Tablette / GSM Papa / GSM Maman), son on/off, nom de l'appli, PIN, profils des enfants (nom, avatar parmi 20 émojis, couleur parmi 6), éditeurs des missions / récompenses (avec durée de chrono : 0, 10, 15, 20, 30, 45, 60, 90, 120 min) / malus, installation, **export JSON**, **import JSON**, **réinitialisation** (double confirmation).
+- Notifications in-app (toasts + sons + vibrations) quand l'enfant demande une mission, achète, lance/met en pause un chrono, ou quand l'autre parent agit.
+
+## 4. Architecture du code (`index.html`)
+
+1. **`<head>`** : métas PWA/iOS, favicon SVG inline, manifeste, police Google *Baloo 2*.
+2. **`<style>`** (lignes ~21–349) : variables CSS (couleurs, ombres, safe-area), thèmes de couleur par enfant (`theme-blue`, `theme-pink`…), cartes, onglets, overlay chrono, toasts, modales, animations (bump, shake, flash).
+3. **`<body>`** : conteneur `#app` (rendu dynamique), canvas confettis, flash rouge, overlay chrono, zone de toasts, modale, barre d'installation, input fichier caché pour l'import.
+4. **`<script>`** (lignes ~375–1821), sections :
+   - **Configuration** : `FIREBASE_CONFIG`, `FAMILY_KEY`, `DEFAULT_SON_NAME`, `FIREBASE_SDK_VERSION`.
+   - **Outils** : `$`, `$$`, `esc` (échappement HTML anti-XSS), `uid`, `clone`, `now()` (corrigé par le décalage serveur Firebase), `LS` (localStorage sûr), `int`, formats de date/durée.
+   - **Données** : `defaultData()`, `normalize()` (répare/complète toute donnée entrante), `list()` (tri par `order` puis `ts`).
+   - **Appareil** : `device.role` (`tablet` | `papa` | `maman`) et `device.sound`, stockés localement par appareil.
+   - **Stockage + synchro** : `write(updates)` (mise à jour multi-chemins locale + `update()` Firebase), `txn(path, fn)` (**transaction atomique** Firebase pour éviter les conflits Papa/Maman ; repli local hors ligne), `replaceAll()`, `initFirebase()` (chargement du SDK, écoute `.info/connected`, `.info/serverTimeOffset` et `on('value')` sur la racine familiale ; si la base est vide, l'appareil y dépose ses données), pastille d'état 🟢 Synchronisé / 🟠 Mode local.
+   - **Sons** : synthèse WebAudio (`tone`, `SOUNDS` : click, pop, success, coin, victory, ding, warn, malus, error, alarm), déverrouillage audio au premier toucher.
+   - **Effets** : confettis canvas, flash rouge, bump, shake, `toast()`, `modal()` (promesse oui/non).
+   - **Détection d'événements** (`detectEvents`, `reactToLog`) : compare l'état reçu à ce qui a déjà été vu (journal, demandes, statut des chronos) pour déclencher sons/toasts sur les autres appareils ; ignore les événements de plus de 2 min et ceux créés localement.
+   - **Logique métier** : `addLog` (journal limité à 500 entrées), `changePoints` (transaction, plancher 0), `toggleMission`, `validateRequest` (transaction : la demande ne peut être validée qu'une seule fois même si les deux parents cliquent), `buyReward` (transaction de débit), chronos (`startTimer`, `pauseTimer`, `resumeTimer`, `finishTicket`, `checkExpired`, `timerFinishedAlert`), overlay plein écran + Wake Lock.
+   - **Rendu** : `render()` régénère le HTML de la vue courante (`home`, `child`, `pin`, `parent`) ; `scheduleRender()` via `requestAnimationFrame` ; `updateTimers()` / `updateBadges()` mettent à jour sans tout redessiner.
+   - **Vues** : `viewHome`, `viewChild` (+ `childMissions`, `childShop`, `childLog`), `viewPin`, `viewParent` (+ `parentValidations`, `parentMalus`, `parentTickets`, `parentSettings`, `editorHtml`).
+   - **Actions** : objet `ACTIONS` ; délégation d'événements via les attributs `data-act="…"` et `data-*`.
+   - **Installation** : détection iOS/Android/standalone, bannière « 📲 Installer » (rappel repoussé de 3 jours), aide d'installation, enregistrement du service worker, application des mises à jour au retour à l'accueil.
+   - **Boucles** : tick toutes les 500 ms (chronos + expiration), rafraîchissement au retour de visibilité, re-rendu des validations toutes les 30 s.
+
+## 5. Modèle de données (racine `FAMILY_KEY` dans Firebase, ou `mh_data` en localStorage)
+
+```js
+{
+  meta:     { version: 1, createdAt },
+  settings: { appName: 'Mini Héros', pin: '1234' },
+  profiles: { c1: { name, avatar, color }, c2: { … } },        // 2 enfants fixes : c1, c2
+  scores:   { c1: { points, yellow }, c2: { points, yellow } }, // yellow = carton jaune actif
+  missions: { <id>: { emoji, title, points, order } },
+  rewards:  { <id>: { emoji, title, cost, duration /*min, 0 = sans chrono*/, order } },
+  maluses:  { <id>: { emoji, title, points, order } },
+  requests: { <id>: { childId, missionId, emoji, title, points, ts } },   // demandes en attente
+  tickets:  { <id>: { childId, rewardId, emoji, title, cost, duration, ts,
+                      status: 'unused' | 'used', usedAt, usedBy,
+                      timer?: { status: 'idle'|'running'|'paused'|'done',
+                                durationMs, remainingMs, endTime, startedAt, by } } },
+  log:      { <id>: { ts, childId, type: 'gain'|'malus'|'yellow'|'purchase',
+                      emoji, label, points, by } }                        // max 500
+}
+```
+Clés locales propres à chaque appareil : `mh_role`, `mh_sound`, `mh_data` (copie de l'état), plus un horodatage de rappel d'installation.
+
+**Chronos synchronisés** : un chrono en marche stocke `endTime` (heure de fin absolue, en heure serveur corrigée) ; en pause il stocke `remainingMs`. Chaque appareil calcule ainsi le temps restant identique, et le premier qui constate l'expiration marque le ticket `used` par `'Chrono'`.
+
+### Données par défaut
+- Missions : 👟 Ranger chaussures/manteau (5), 🍽️ Mettre/débarrasser la table (10), 🛏️ Faire son lit / s'habiller seul (10), 🧸 Ranger toute sa chambre (20), 🧹 Aider pour une grosse tâche (25).
+- Récompenses : 🍨 Choisir dessert/dessin animé (25), 📱 30 min de tablette (30, chrono 30 min), ⏱️ 1 h de tablette quand je veux (50, chrono 60 min), 🎬 Soirée film + pop-corn (80), 🎁 Petit cadeau à 10 € (200).
+- Malus : 🗣️ A répondu / mal parlé (10), 👂 N'a pas écouté (10), 🏫 Remarque à l'école (20), 🥊 Violence (30).
+
+## 6. Sécurité et limites connues
+- Pas d'authentification Firebase : l'accès repose sur des règles qui ouvrent uniquement le chemin `FAMILY_KEY` (nom difficile à deviner). Quiconque connaît ce nom et la config peut lire/écrire.
+- Le PIN parent est stocké en clair dans les données et vérifié côté client (protection « anti-enfant », pas une vraie sécurité).
+- Nombre d'enfants fixé à 2 (`KIDS = ['c1','c2']`).
+- Toutes les entrées utilisateur sont échappées (`esc`) avant insertion dans le HTML.
+
+## 7. Règles Firebase attendues
+```json
+{ "rules": { ".read": false, ".write": false,
+    "<FAMILY_KEY>": { ".read": true, ".write": true } } }
+```
+
+---
+
+# 8. Code source complet
+
+
+## 📄 `README.md`
+
+````markdown
+# ⭐ Mini Héros
+
+Application familiale (missions, étoiles, boutique, malus, chronos tablette) en **un seul fichier** `index.html`, synchronisée en temps réel entre la tablette des enfants et les GSM des parents via Firebase Realtime Database (plan gratuit Spark). Sans configuration, elle fonctionne en **mode local** (localStorage).
+
+## Mise en route Firebase (5 étapes)
+1. https://console.firebase.google.com → **Ajouter un projet** (Analytics inutile).
+2. Menu **Créer → Realtime Database → Créer une base** (région `europe-west1`), démarrer en mode verrouillé.
+3. Onglet **Règles** → coller (remplacer `famille-mini-heros` par votre `FAMILY_KEY`) puis **Publier** :
+   ```json
+   { "rules": { ".read": false, ".write": false,
+       "famille-mini-heros": { ".read": true, ".write": true } } }
+   ```
+4. **Paramètres du projet ⚙️ → Vos applications → `</>` Web** → copier l'objet `firebaseConfig` dans `const FIREBASE_CONFIG = { … }` en haut du `<script>` de `index.html` (vérifier que `databaseURL` est rempli). Choisir un `FAMILY_KEY` unique et difficile à deviner.
+5. Publier sur GitHub Pages (Settings → Pages → branche), ouvrir le lien sur les 3 appareils → **Ajouter à l'écran d'accueil**, puis Mode Parent → Réglages → choisir le rôle de chaque appareil (PIN par défaut : `1234`).
+
+## Installation sur les appareils
+- **Android (Chrome)** : une bannière « 📲 Installer Mini Héros » apparaît automatiquement → **Installer**.
+- **iPhone / iPad (Safari)** : la bannière affiche le mode d'emploi → ⬆️ Partager → **Sur l'écran d'accueil** → Ajouter.
+- Le bouton 📲 (barre du haut) et Mode Parent → Réglages → **Application** permettent de relancer l'installation.
+
+Fichiers : `index.html` (application), `manifest.webmanifest` + `icons/` (installation), `sw.js` (installation Android et ouverture hors ligne).
+
+````
+
+## 📄 `manifest.webmanifest`
+
+````json
+{
+  "id": "./",
+  "name": "Mini Héros",
+  "short_name": "Mini Héros",
+  "description": "Missions, étoiles et récompenses pour toute la famille, synchronisé en temps réel.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen"],
+  "orientation": "any",
+  "background_color": "#f5f3ff",
+  "theme_color": "#7c3aed",
+  "categories": ["kids", "education", "lifestyle"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
+
+````
+
+## 📄 `sw.js`
+
+````javascript
+/* Mini Héros — service worker
+   - Rend l'application installable (Android / Chrome / Edge).
+   - Permet de l'ouvrir même sans réseau (dernière version en cache).
+   - Ne touche jamais aux échanges temps réel avec Firebase. */
+const VERSION = 'mini-heros-v2';
+const CORE = [
+  './',
+  './index.html',
+  './manifest.webmanifest',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/maskable-512.png',
+  './icons/apple-touch-icon.png',
+  './icons/icon.svg'
+];
+
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(VERSION).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+
+function isFirebaseSdk(url) { return url.hostname === 'www.gstatic.com' && url.pathname.startsWith('/firebasejs/'); }
+function isFont(url) { return url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com'; }
+
+self.addEventListener('fetch', event => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+
+  // Page : réseau d'abord (toujours la dernière version), cache si hors ligne.
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      fetch(req)
+        .then(res => { const copy = res.clone(); caches.open(VERSION).then(c => c.put('./index.html', copy)); return res; })
+        .catch(() => caches.match('./index.html').then(r => r || caches.match('./')))
+    );
+    return;
+  }
+
+  // SDK Firebase et polices : cache d'abord (fichiers versionnés).
+  if (isFirebaseSdk(url) || isFont(url)) {
+    event.respondWith(
+      caches.match(req).then(hit => hit || fetch(req).then(res => {
+        if (res && (res.ok || res.type === 'opaque')) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req, copy)); }
+        return res;
+      }))
+    );
+    return;
+  }
+
+  // Fichiers du site (icônes, manifeste) : cache puis mise à jour en arrière-plan.
+  if (url.origin === self.location.origin) {
+    event.respondWith(
+      caches.match(req).then(hit => {
+        const net = fetch(req).then(res => {
+          if (res && res.ok) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req, copy)); }
+          return res;
+        }).catch(() => hit);
+        return hit || net;
+      })
+    );
+  }
+  // Tout le reste (base Firebase temps réel, etc.) passe directement au réseau.
+});
+
+````
+
+## 📄 `icons/icon.svg`
+
+````html
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#ec4899"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="url(#g)"/><path d="M256 92l48 98 108 16-78 76 18 107-96-50-96 50 18-107-78-76 108-16z" fill="#fde047" stroke="#ffffff" stroke-width="16" stroke-linejoin="round"/></svg>
+
+````
+
+## 📄 `index.html`
+
+````html
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#7c3aed">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mini Héros">
+<meta name="application-name" content="Mini Héros">
+<meta name="description" content="Mini Héros : missions, étoiles et récompenses pour toute la famille, synchronisé en temps réel.">
+<title>Mini Héros</title>
+<link rel="icon" type="image/svg+xml" id="favIcon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%23ec4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='512' height='512' rx='112' fill='url(%23g)'/%3E%3Cpath d='M256 92l48 98 108 16-78 76 18 107-96-50-96 50 18-107-78-76 108-16z' fill='%23fde047' stroke='%23ffffff' stroke-width='16' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="format-detection" content="telephone=no">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f5f3ff; --card:#ffffff; --ink:#1e1b4b; --muted:#6b7280;
+  --green:#22c55e; --green-d:#15803d; --gold:#f59e0b; --gold-d:#b45309;
+  --blue:#3b82f6; --blue-d:#1d4ed8; --red:#ef4444; --red-d:#b91c1c;
+  --yellow:#facc15; --yellow-d:#ca8a04; --purple:#7c3aed;
+  --shadow:0 4px 0 rgba(30,27,75,.06), 0 10px 26px rgba(30,27,75,.08);
+  --safe-t:env(safe-area-inset-top,0px); --safe-b:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;min-height:100%}
+body{
+  font-family:'Baloo 2','Nunito',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  background:radial-gradient(circle at 8% 0%,#ede9fe 0,transparent 42%),radial-gradient(circle at 100% 35%,#fce7f3 0,transparent 42%),var(--bg);
+  background-attachment:fixed;color:var(--ink);overscroll-behavior:none;
+  -webkit-user-select:none;user-select:none;min-height:100vh;min-height:100dvh;
+}
+input,textarea,select{-webkit-user-select:text;user-select:text;font:inherit;color:var(--ink)}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;touch-action:manipulation;padding:0}
+.hidden{display:none!important}
+body{-webkit-touch-callout:none;touch-action:manipulation}
+/* ---------- Bannière d'installation ---------- */
+#installBar{position:fixed;left:12px;right:12px;bottom:calc(104px + var(--safe-b));z-index:60;max-width:560px;margin:0 auto;display:flex;align-items:center;gap:12px;
+  background:#fff;border-radius:22px;padding:12px 12px 12px 14px;box-shadow:0 12px 40px rgba(30,27,75,.28);border:2px solid #ede9fe;animation:slideUp .35s}
+#installBar .ib-icon{width:52px;height:52px;border-radius:14px;flex:none}
+#installBar .ib-text{flex:1;min-width:0;line-height:1.15}
+#installBar .ib-text b{display:block;font-size:1.05rem}
+#installBar .ib-text small{color:var(--muted);font-weight:700}
+#installBar .ib-close{width:40px;height:40px;border-radius:12px;background:#f3f4f6;font-size:1.1rem;flex:none}
+.view-home #installBar,.no-tabs #installBar{bottom:calc(16px + var(--safe-b))}
+.steps{text-align:left;margin:14px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.steps li{display:flex;gap:12px;align-items:center;background:#f5f3ff;border-radius:16px;padding:10px 12px;font-weight:700;line-height:1.2}
+.steps .n{width:32px;height:32px;border-radius:50%;background:var(--purple);color:#fff;display:flex;align-items:center;justify-content:center;flex:none;font-weight:800}
+.steps .k{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;padding:0 6px;border-radius:8px;background:#fff;border:2px solid #ddd6fe;font-size:1.05rem;margin:0 2px}
+@keyframes slideUp{0%{transform:translateY(30px);opacity:0}100%{transform:none;opacity:1}}
+
+/* ---------- Barre haute ---------- */
+.topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:calc(10px + var(--safe-t)) 16px 10px;background:rgba(255,255,255,.88);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  box-shadow:0 2px 12px rgba(30,27,75,.06)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:800;font-size:1.5rem;color:var(--purple);min-width:0}
+.brand-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand-star{font-size:1.7rem;animation:spin 6s linear infinite;display:inline-block}
+.top-actions{display:flex;align-items:center;gap:8px;flex:none}
+.sync-pill{display:inline-flex;align-items:center;gap:4px;font-size:.82rem;font-weight:800;padding:4px 10px;border-radius:999px;
+  background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;white-space:nowrap}
+.sync-pill.on{background:#f0fdf4;color:#15803d;border-color:#bbf7d0}
+.icon-btn{width:44px;height:44px;border-radius:14px;background:#f3f4f6;font-size:1.3rem;flex:none;display:flex;align-items:center;justify-content:center}
+.parent-btn{position:relative;height:44px;padding:0 14px;border-radius:14px;background:var(--ink);color:#fff;font-weight:800;display:flex;align-items:center;gap:6px;flex:none}
+.badge{position:absolute;top:-7px;right:-7px;min-width:24px;height:24px;padding:0 6px;border-radius:999px;background:var(--red);color:#fff;
+  font-size:.85rem;font-weight:800;display:flex;align-items:center;justify-content:center;border:2px solid #fff;animation:pulse 1.6s infinite;line-height:1}
+.dark-bar .icon-btn{background:rgba(255,255,255,.2);color:#fff}
+@media (max-width:560px){ .parent-btn .plbl{display:none} .brand{font-size:1.25rem} }
+@media (max-width:420px){ .sync-pill .txt{display:none} }
+
+/* ---------- Accueil ---------- */
+.home{max-width:1100px;margin:0 auto;padding:18px 16px calc(30px + var(--safe-b))}
+.home-title{text-align:center;font-size:clamp(1.8rem,5vw,2.8rem);margin:6px 0 18px;line-height:1.1}
+.profiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:22px}
+.child-card{position:relative;width:100%;background:linear-gradient(160deg,var(--tc1),var(--tc2));color:#fff;border-radius:34px;padding:56px 20px 24px;
+  text-align:center;box-shadow:0 10px 0 var(--tcd),0 22px 40px rgba(0,0,0,.14);transition:transform .15s,box-shadow .15s;min-height:360px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;overflow:hidden}
+.child-card:active{transform:translateY(7px);box-shadow:0 3px 0 var(--tcd),0 10px 20px rgba(0,0,0,.12)}
+.child-card::after{content:'';position:absolute;width:260px;height:260px;border-radius:50%;background:rgba(255,255,255,.12);top:-90px;right:-90px}
+.cc-avatar{font-size:clamp(5rem,14vw,7.5rem);line-height:1.1;filter:drop-shadow(0 6px 8px rgba(0,0,0,.2));animation:float 3s ease-in-out infinite}
+.cc-name{font-size:2.1rem;font-weight:800;line-height:1.1}
+.cc-points{font-size:clamp(3.2rem,10vw,4.4rem);font-weight:800;line-height:1;text-shadow:0 3px 0 rgba(0,0,0,.15)}
+.cc-badges{position:absolute;top:14px;left:14px;right:14px;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;pointer-events:none;z-index:2}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:4px 12px;border-radius:999px;font-weight:800;font-size:.95rem;background:rgba(255,255,255,.95);color:var(--ink);white-space:nowrap}
+.chip-yellow{background:var(--yellow);color:#713f12;box-shadow:0 3px 0 var(--yellow-d);animation:wiggle 1.4s infinite}
+.chip-wait{background:#fff7ed;color:#9a3412}
+.chip-timer{background:#eff6ff;color:var(--blue-d);font-variant-numeric:tabular-nums}
+.progress-wrap{width:100%;max-width:340px;margin-top:12px}
+.progress-label{font-weight:800;font-size:1.05rem;margin-bottom:4px}
+.progress{height:16px;border-radius:999px;background:rgba(255,255,255,.35);overflow:hidden}
+.progress>div{height:100%;border-radius:999px;background:#fff;transition:width .6s}
+.btn-parent-big{margin:26px auto 0;display:flex}
+@media (max-width:560px){ .child-card{min-height:290px;padding-top:50px} .profiles{gap:18px} }
+
+.theme-blue{--tc1:#60a5fa;--tc2:#2563eb;--tcd:#1e40af}
+.theme-pink{--tc1:#f472b6;--tc2:#db2777;--tcd:#9d174d}
+.theme-green{--tc1:#4ade80;--tc2:#16a34a;--tcd:#166534}
+.theme-orange{--tc1:#fb923c;--tc2:#ea580c;--tcd:#9a3412}
+.theme-purple{--tc1:#a78bfa;--tc2:#7c3aed;--tcd:#5b21b6}
+.theme-teal{--tc1:#2dd4bf;--tc2:#0d9488;--tcd:#115e59}
+
+/* ---------- Vue enfant ---------- */
+.child-head,.parent-head{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:calc(10px + var(--safe-t)) 14px 12px;color:#fff;box-shadow:0 4px 16px rgba(0,0,0,.12)}
+.child-head{background:linear-gradient(135deg,var(--tc1),var(--tc2))}
+.parent-head{background:linear-gradient(135deg,#312e81,#1e1b4b)}
+.back-btn{width:56px;height:56px;border-radius:18px;background:rgba(255,255,255,.25);font-size:1.6rem;flex:none;display:flex;align-items:center;justify-content:center;color:#fff}
+.back-btn:active{transform:scale(.94)}
+.ch-id{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
+.ch-avatar{font-size:2.6rem;line-height:1}
+.ch-name{font-size:1.5rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ch-yellow{font-size:1.6rem;animation:wiggle 1.4s infinite}
+.ch-points{background:#fff;color:var(--ink);font-weight:800;font-size:1.9rem;padding:4px 16px;border-radius:18px;white-space:nowrap;box-shadow:0 4px 0 rgba(0,0,0,.15);flex:none}
+.bump{animation:bump .7s}
+.ph-title{flex:1;min-width:0;font-weight:800;font-size:1.25rem;line-height:1.1}
+.ph-title small{display:block;font-size:.85rem;opacity:.75;font-weight:700}
+.content{max-width:1100px;margin:0 auto;padding:18px 16px calc(124px + var(--safe-b))}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;
+  padding:10px 12px calc(10px + var(--safe-b));background:rgba(255,255,255,.95);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 -4px 20px rgba(0,0,0,.08)}
+.tabs-inner{display:contents}
+.tab{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;height:78px;border-radius:22px;background:#f3f4f6;font-weight:800;font-size:1.05rem;color:var(--muted);transition:transform .1s}
+.tab:active{transform:translateY(3px)}
+.tab .ti{font-size:2.1rem;line-height:1}
+.tab.active{color:#fff}
+.tab.active.t-green{background:var(--green);box-shadow:0 5px 0 var(--green-d)}
+.tab.active.t-gold{background:var(--gold);box-shadow:0 5px 0 var(--gold-d)}
+.tab.active.t-blue{background:var(--blue);box-shadow:0 5px 0 var(--blue-d)}
+.tab.active.t-red{background:var(--red);box-shadow:0 5px 0 var(--red-d)}
+.tab.active.t-dark{background:var(--ink);box-shadow:0 5px 0 #000}
+.parent-tabs{grid-template-columns:repeat(4,1fr);gap:8px}
+.parent-tabs .tab{height:64px;font-size:.82rem;border-radius:18px}
+.parent-tabs .tab .ti{font-size:1.6rem}
+.tab .badge{top:4px;right:8px}
+@media (min-width:900px){ .tabs{padding-left:calc(50% - 540px);padding-right:calc(50% - 540px)} }
+
+.section-title{font-size:1.55rem;font-weight:800;margin:8px 4px 14px;display:flex;align-items:center;gap:8px;line-height:1.1}
+.section-title.green{color:var(--green-d)} .section-title.gold{color:var(--gold-d)} .section-title.blue{color:var(--blue-d)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px}
+@media (max-width:560px){ .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px} }
+.empty{text-align:center;color:var(--muted);font-weight:700;padding:26px 12px;font-size:1.1rem}
+.empty .big{font-size:3rem;display:block}
+
+.mission-card{position:relative;background:linear-gradient(160deg,#4ade80,#16a34a);color:#fff;border-radius:28px;padding:20px 12px;min-height:210px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;box-shadow:0 8px 0 #15803d;transition:transform .12s,box-shadow .12s}
+.mission-card:active{transform:translateY(6px);box-shadow:0 2px 0 #15803d}
+.mc-emoji{font-size:4.3rem;line-height:1}
+.mc-title{font-weight:700;font-size:1.12rem;line-height:1.2}
+.mc-points{font-weight:800;font-size:1.65rem;background:rgba(255,255,255,.25);padding:2px 16px;border-radius:999px}
+.mission-card.pending{background:repeating-linear-gradient(45deg,#fef3c7,#fef3c7 14px,#fde68a 14px,#fde68a 28px);color:#78350f;box-shadow:0 8px 0 #f59e0b}
+.mission-card.pending:active{box-shadow:0 2px 0 #f59e0b}
+.mission-card.pending .mc-points{font-size:1.05rem;background:#fff;padding:4px 12px}
+.mission-card.pending .mc-emoji{animation:wiggle 1.5s infinite}
+.mc-hint{font-size:.92rem;font-weight:800;opacity:.85}
+
+.reward-card{position:relative;background:linear-gradient(160deg,#fde68a,#f59e0b);color:#451a03;border-radius:28px;padding:22px 12px 18px;min-height:220px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;box-shadow:0 8px 0 #b45309;transition:transform .12s,box-shadow .12s}
+.reward-card.ok{animation:glow 2.2s infinite}
+.reward-card.ok:active{transform:translateY(6px);box-shadow:0 2px 0 #b45309}
+.reward-card.locked{background:linear-gradient(160deg,#eef2f7,#cbd5e1);color:#475569;box-shadow:0 8px 0 #94a3b8}
+.reward-card.locked .rc-emoji{filter:grayscale(.8);opacity:.6}
+.rc-emoji{font-size:4.2rem;line-height:1}
+.rc-title{font-weight:700;font-size:1.08rem;line-height:1.2}
+.rc-cost{font-weight:800;font-size:1.55rem;background:rgba(255,255,255,.55);padding:0 16px;border-radius:999px}
+.rc-dur{position:absolute;top:10px;right:10px;background:var(--blue);color:#fff;font-size:.85rem;font-weight:800;padding:2px 9px;border-radius:999px}
+.rc-go{font-weight:800;font-size:1.05rem}
+.rc-need{font-weight:800;font-size:1.05rem;color:#334155}
+.reward-card .progress{width:90%;height:12px;background:rgba(0,0,0,.1)}
+.reward-card .progress>div{background:var(--gold)}
+
+.tickets{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;margin-bottom:26px}
+.ticket{display:flex;gap:14px;align-items:center;background:#fff;border:3px dashed var(--blue);border-radius:22px;padding:14px 16px;box-shadow:var(--shadow)}
+.t-emoji{font-size:3.2rem;line-height:1;flex:none}
+.t-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.t-title{font-weight:800;font-size:1.15rem;line-height:1.15}
+.t-date{color:var(--muted);font-size:.9rem;font-weight:700}
+.t-hint{font-weight:800;color:var(--blue-d);font-size:.95rem}
+.ticket-timer{font-size:1.9rem;font-weight:800;color:var(--blue-d);font-variant-numeric:tabular-nums;line-height:1}
+
+/* ---------- Journal ---------- */
+.log-list{display:flex;flex-direction:column;gap:10px}
+.log-day{font-weight:800;color:var(--muted);margin:12px 4px 0;text-transform:capitalize}
+.log-row{display:flex;align-items:center;gap:12px;background:#fff;border-radius:18px;padding:12px 14px;border-left:9px solid #ddd;box-shadow:var(--shadow)}
+.log-gain{border-color:var(--green)} .log-gain .lr-points{color:var(--green-d)}
+.log-purchase{border-color:var(--blue)} .log-purchase .lr-points{color:var(--blue-d)}
+.log-malus{border-color:var(--red);background:#fff5f5} .log-malus .lr-points{color:var(--red-d)}
+.log-yellow{border-color:var(--yellow);background:#fefce8} .log-yellow .lr-points{color:#a16207}
+.lr-emoji{font-size:2.1rem;line-height:1;flex:none}
+.lr-body{flex:1;min-width:0}
+.lr-label{font-weight:700;line-height:1.2}
+.lr-meta{color:var(--muted);font-size:.85rem;font-weight:600}
+.lr-points{font-weight:800;font-size:1.35rem;white-space:nowrap}
+.log-filter{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 6px}
+
+/* ---------- Boutons ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:12px 18px;border-radius:16px;font-weight:800;font-size:1.05rem;transition:transform .1s,box-shadow .1s;line-height:1.1;text-align:center}
+.btn:active{transform:translateY(3px)}
+.btn-green{background:var(--green);color:#fff;box-shadow:0 4px 0 var(--green-d)}
+.btn-blue{background:var(--blue);color:#fff;box-shadow:0 4px 0 var(--blue-d)}
+.btn-red{background:var(--red);color:#fff;box-shadow:0 4px 0 var(--red-d)}
+.btn-yellow{background:var(--yellow);color:#713f12;box-shadow:0 4px 0 var(--yellow-d)}
+.btn-gold{background:var(--gold);color:#fff;box-shadow:0 4px 0 var(--gold-d)}
+.btn-grey{background:#e5e7eb;color:#374151;box-shadow:0 4px 0 #9ca3af}
+.btn-dark{background:var(--ink);color:#fff;box-shadow:0 4px 0 #000}
+.btn-ghost{background:#fff;color:var(--ink);border:2px solid #e5e7eb}
+.btn-lg{padding:16px 24px;font-size:1.3rem;border-radius:20px;min-height:64px}
+.btn-sm{padding:8px 12px;font-size:.92rem;border-radius:12px}
+.btn-block{width:100%;display:flex}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap}
+.btn-row .btn{flex:1}
+.btn-round{width:54px;height:54px;border-radius:16px;font-size:1.45rem;flex:none;display:inline-flex;align-items:center;justify-content:center;transition:transform .1s}
+.btn-round:active{transform:translateY(2px)}
+.btn-round.green{background:#dcfce7;box-shadow:0 3px 0 #86efac}
+.btn-round.red{background:#fee2e2;box-shadow:0 3px 0 #fca5a5}
+.btn-round.blue{background:#dbeafe;box-shadow:0 3px 0 #93c5fd}
+
+/* ---------- Mode parent ---------- */
+.card{background:#fff;border-radius:22px;padding:16px;box-shadow:var(--shadow);margin-bottom:16px}
+.card h2{font-size:1.22rem;margin:0 0 12px;display:flex;align-items:center;gap:8px;line-height:1.15}
+.card h3{font-size:1.05rem;margin:14px 0 8px}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.card-head h2{margin:0}
+.count{background:var(--red);color:#fff;border-radius:999px;padding:0 10px;font-size:.95rem}
+.count.zero{background:#e5e7eb;color:var(--muted)}
+.req-row{display:flex;align-items:center;gap:10px;padding:10px;border-radius:16px;background:#f9fafb;margin-bottom:8px;animation:slideIn .3s}
+.rr-avatar{font-size:2.3rem;line-height:1;flex:none}
+.rr-body{flex:1;min-width:0}
+.rr-title{font-weight:800;line-height:1.15}
+.rr-meta{font-size:.88rem;color:var(--muted);font-weight:600}
+.rr-actions{display:flex;gap:8px;flex:none}
+.picker{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.pick{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:16px;background:#f3f4f6;border:3px solid transparent;font-weight:800;text-align:left;min-width:0}
+.pick .pa{font-size:2.1rem;line-height:1;flex:none}
+.pick .pn{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+.pick small{display:block;color:var(--muted);font-weight:700}
+.pick.sel{background:#fff;border-color:var(--tc2);box-shadow:0 0 0 4px color-mix(in srgb,var(--tc1) 30%,transparent)}
+.chip-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.mini-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:10px 8px;border-radius:16px;text-align:center;font-size:.88rem;font-weight:700;min-height:104px;line-height:1.15;transition:transform .1s}
+.mini-card:active{transform:translateY(3px)}
+.mini-card .me{font-size:1.9rem;line-height:1.1}
+.mini-card b{font-size:1.05rem}
+.mini-card.green{background:#dcfce7;color:#14532d;box-shadow:0 3px 0 #86efac}
+.mini-card.red{background:#fee2e2;color:#7f1d1d;box-shadow:0 3px 0 #fca5a5;min-height:120px}
+.form-row{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.input{flex:1;min-width:0;padding:12px 14px;border-radius:14px;border:2px solid #e5e7eb;font-size:1rem;background:#fff}
+.input:focus{outline:none;border-color:var(--purple)}
+.input.num{max-width:120px;flex:none}
+.quick{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.yc-status{padding:12px 14px;border-radius:14px;font-weight:800;margin-bottom:12px;display:flex;align-items:center;gap:10px}
+.yc-status .big{font-size:2.2rem;line-height:1}
+.yc-status.on{background:#fef9c3;color:#854d0e;border:2px solid var(--yellow)}
+.yc-status.off{background:#f0fdf4;color:#166534}
+.yellow-zone{border:3px solid var(--yellow)}
+.red-zone{border:3px solid #fecaca}
+.ptimer{background:linear-gradient(160deg,#eff6ff,#dbeafe);border-radius:18px;padding:14px;margin-bottom:10px}
+.ptimer.paused{background:linear-gradient(160deg,#fff7ed,#ffedd5)}
+.pt-who{font-weight:800}
+.pt-time{font-size:2.8rem;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1;color:var(--blue-d)}
+.ptimer.paused .pt-time{color:#c2410c}
+.pt-status{font-weight:700;color:var(--muted);margin-bottom:8px}
+.tk-row{display:flex;align-items:center;gap:10px;padding:10px;border-radius:16px;background:#f9fafb;margin-bottom:8px;flex-wrap:wrap}
+.tk-row .rr-body{flex:1 1 160px}
+.tk-row.done{opacity:.65}
+.ed-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border-radius:14px;background:#f9fafb;margin-bottom:8px}
+.ed-row.new{background:#f5f3ff;border:2px dashed #c4b5fd}
+.ed-row .input{padding:10px}
+.ed-emoji{width:60px;flex:none!important;text-align:center;font-size:1.3rem}
+.ed-title{flex:1 1 170px!important}
+.ed-num{width:92px;flex:none!important}
+.ed-dur{width:130px;flex:none!important}
+.ed-unit{font-size:.8rem;color:var(--muted);font-weight:700}
+.role-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.role-btn{padding:12px 4px;border-radius:16px;background:#f3f4f6;font-weight:800;border:3px solid transparent;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:.9rem;line-height:1.1;text-align:center}
+.role-btn span{font-size:1.9rem}
+.role-btn.sel{border-color:var(--purple);background:#f5f3ff;color:var(--purple)}
+.avatar-picks{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 10px}
+.avatar-picks button{width:44px;height:44px;font-size:1.5rem;border-radius:12px;background:#f3f4f6}
+.lbl{display:block;font-weight:700;font-size:.9rem;color:var(--muted);margin:8px 2px 4px}
+.kid-block{border:2px solid #f3f4f6;border-radius:18px;padding:12px;margin-bottom:12px}
+.note{font-size:.9rem;color:var(--muted);font-weight:600;margin:6px 2px}
+.switch-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;font-weight:700}
+
+/* ---------- PIN ---------- */
+.pin-screen{min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:calc(20px + var(--safe-t)) 16px calc(20px + var(--safe-b));
+  background:linear-gradient(160deg,#312e81,#1e1b4b);color:#fff;position:relative}
+.pin-screen .back-btn{position:absolute;top:calc(14px + var(--safe-t));left:14px}
+.pin-lock{font-size:3.6rem;text-align:center;line-height:1}
+.pin-box h2{text-align:center;margin:6px 0 18px;font-size:1.6rem}
+.pin-dots{display:flex;gap:18px;justify-content:center;margin-bottom:28px}
+.pin-dots span{width:22px;height:22px;border-radius:50%;border:3px solid #fff;transition:background .15s}
+.pin-dots span.on{background:#fff}
+.pin-dots.shake{animation:shake .45s}
+.pin-dots.ok span{background:var(--green);border-color:var(--green)}
+.pin-pad{display:grid;grid-template-columns:repeat(3,82px);gap:16px;justify-content:center}
+.pin-key{width:82px;height:82px;border-radius:50%;background:rgba(255,255,255,.13);color:#fff;font-size:2rem;font-weight:700}
+.pin-key:active{background:rgba(255,255,255,.32)}
+.pin-key.alt{background:transparent;font-size:1.6rem}
+.pin-hint{text-align:center;opacity:.6;margin-top:22px;font-size:.92rem}
+
+/* ---------- Modales / overlays ---------- */
+.modal{position:fixed;inset:0;z-index:100;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+.modal-card{background:#fff;border-radius:30px;padding:26px 22px 22px;max-width:440px;width:100%;text-align:center;animation:pop .25s}
+.m-emoji{font-size:4.8rem;line-height:1.1}
+.modal-card h3{font-size:1.55rem;margin:6px 0;line-height:1.15}
+.modal-card p{color:var(--muted);margin:0 0 6px;font-weight:700}
+.m-actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}
+#timerOverlay{position:fixed;inset:0;z-index:90;background:linear-gradient(160deg,#1e3a8a,#312e81);color:#fff;display:flex;align-items:center;justify-content:center;
+  padding:calc(20px + var(--safe-t)) 20px calc(20px + var(--safe-b));overflow:auto}
+#timerOverlay.paused{background:linear-gradient(160deg,#7c2d12,#431407)}
+#timerOverlay.finished{animation:flashbg .7s infinite alternate}
+.timer-box{text-align:center;width:100%;max-width:540px}
+.to-who{font-size:1.7rem;font-weight:800}
+.to-title{font-size:1.2rem;opacity:.85;margin-bottom:14px;font-weight:700}
+.ring{position:relative;width:min(78vw,50vh,380px);aspect-ratio:1/1;margin:0 auto}
+.ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ring-bg{fill:none;stroke:rgba(255,255,255,.15);stroke-width:16}
+.ring-fg{fill:none;stroke:#4ade80;stroke-width:16;stroke-linecap:round;transition:stroke-dashoffset .5s linear,stroke .5s}
+.ring-fg.mid{stroke:#fb923c} .ring-fg.low{stroke:#f87171}
+.to-time{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:clamp(3rem,14vw,5.6rem);font-weight:800;font-variant-numeric:tabular-nums}
+#timerOverlay.paused .to-time{animation:blink 1.2s infinite}
+.to-status{font-size:1.35rem;font-weight:800;margin:16px 0}
+.to-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.to-actions .btn{min-width:150px}
+#toasts{position:fixed;left:50%;transform:translateX(-50%);top:calc(74px + var(--safe-t));z-index:120;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;width:min(92vw,480px)}
+.toast{background:var(--ink);color:#fff;padding:12px 18px;border-radius:16px;font-weight:800;box-shadow:0 10px 30px rgba(0,0,0,.25);animation:toastIn .3s;text-align:center;line-height:1.2;transition:opacity .3s,transform .3s}
+.toast.success{background:var(--green-d)} .toast.error{background:var(--red-d)} .toast.warn{background:#a16207} .toast.info{background:var(--blue-d)}
+.toast.out{opacity:0;transform:translateY(-10px)}
+#confetti{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:110}
+#flash{position:fixed;inset:0;pointer-events:none;z-index:105;opacity:0;background:rgba(239,68,68,.45)}
+#flash.on{animation:flashRed .9s}
+
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+@keyframes wiggle{0%,100%{transform:rotate(0)}25%{transform:rotate(-8deg)}75%{transform:rotate(8deg)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes bump{0%{transform:scale(1)}30%{transform:scale(1.35)}60%{transform:scale(.95)}100%{transform:scale(1)}}
+@keyframes glow{0%,100%{box-shadow:0 8px 0 #b45309,0 0 0 0 rgba(250,204,21,.0)}50%{box-shadow:0 8px 0 #b45309,0 0 26px 6px rgba(250,204,21,.65)}}
+@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-12px)}40%,80%{transform:translateX(12px)}}
+@keyframes pop{0%{transform:scale(.7);opacity:0}100%{transform:scale(1);opacity:1}}
+@keyframes slideIn{0%{transform:translateY(-8px);opacity:0}100%{transform:none;opacity:1}}
+@keyframes toastIn{0%{transform:translateY(-14px);opacity:0}100%{transform:none;opacity:1}}
+@keyframes flashbg{0%{background:#b91c1c}100%{background:#f59e0b}}
+@keyframes flashRed{0%{opacity:0}20%{opacity:1}100%{opacity:0}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+.shake{animation:shake .45s}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Chrono plein écran -->
+<div id="timerOverlay" class="hidden" role="dialog" aria-modal="true">
+  <div class="timer-box">
+    <div class="to-who" id="toWho"></div>
+    <div class="to-title" id="toTitle"></div>
+    <div class="ring">
+      <svg viewBox="0 0 200 200"><circle class="ring-bg" cx="100" cy="100" r="90"></circle><circle class="ring-fg" id="toRing" cx="100" cy="100" r="90" stroke-dasharray="565.49" stroke-dashoffset="0"></circle></svg>
+      <div class="to-time" id="toTime">00:00</div>
+    </div>
+    <div class="to-status" id="toStatus"></div>
+    <div class="to-actions" id="toActions"></div>
+  </div>
+</div>
+
+<div id="modal" class="modal hidden"></div>
+<div id="installBar" class="hidden" role="dialog" aria-label="Installer l'application"></div>
+<div id="toasts" aria-live="polite"></div>
+<div id="flash"></div>
+<canvas id="confetti"></canvas>
+<input type="file" id="importFile" accept="application/json,.json" class="hidden">
+
+<script>
+/* =====================================================================
+   🔧 CONFIGURATION FIREBASE — À REMPLIR UNE SEULE FOIS
+   ---------------------------------------------------------------------
+   1. Console Firebase → Paramètres du projet → "Vos applications" → </> Web
+   2. Copiez ici les valeurs fournies (databaseURL est OBLIGATOIRE).
+   3. Laissez vide pour utiliser l'application en "Mode local" (localStorage).
+   Une fois rempli, la tablette et les 2 GSM se synchronisent automatiquement
+   dès qu'ils ouvrent le lien. Aucun compte ni mot de passe à créer.
+   ===================================================================== */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC8ADJRflCag5vyQYVT2oRQl2tXon350ko",
+  authDomain: "mini-hero-656bb.firebaseapp.com",
+  databaseURL: "https://mini-hero-656bb-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "mini-hero-656bb",
+  storageBucket: "mini-hero-656bb.firebasestorage.app",
+  messagingSenderId: "932010573947",
+  appId: "1:932010573947:web:8d8188fffd5b94bbb3e2de"
+};
+
+/* Nom du "dossier" familial dans la base. Choisissez un nom unique et difficile
+   à deviner (ex : "famille-dupont-7k2q9x") et utilisez le MÊME dans les règles. */
+const FAMILY_KEY = "famille-XXXX-MASQUE";
+
+/* Prénom par défaut du grand frère (modifiable ensuite dans Mode Parent → Réglages). */
+const DEFAULT_SON_NAME = "Romain";
+
+const FIREBASE_SDK_VERSION = "10.12.2";
+
+/* =====================================================================
+   OUTILS
+   ===================================================================== */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = (p = '') => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const clone = o => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
+let serverOffset = 0;
+const now = () => Date.now() + serverOffset;
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* stockage plein ou bloqué */ } }
+};
+const vibrate = p => { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) { /* non supporté */ } };
+const int = (v, d = 0) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? n : d; };
+
+const KIDS = ['c1', 'c2'];
+const AVATARS = ['🦸‍♂️', '🦸‍♀️', '🧚‍♀️', '🧙‍♂️', '🥷', '🦖', '🦄', '🐉', '🦁', '🐯', '🐼', '🐱', '🐶', '🐰', '🚀', '⚽', '👑', '🌈', '🤖', '🧜‍♀️'];
+const COLORS = { blue: 'Bleu', pink: 'Rose', green: 'Vert', orange: 'Orange', purple: 'Violet', teal: 'Turquoise' };
+const DURATIONS = [0, 10, 15, 20, 30, 45, 60, 90, 120];
+
+function fmtDur(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+  const p = n => String(n).padStart(2, '0');
+  return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+}
+function fmtDate(ts) {
+  try { return new Date(ts).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+  catch (e) { return ''; }
+}
+function fmtTime(ts) { try { return new Date(ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } }
+function fmtDay(ts) {
+  const d = new Date(ts), t = new Date(now());
+  const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (sameDay(d, t)) return "Aujourd'hui";
+  const y = new Date(t); y.setDate(t.getDate() - 1);
+  if (sameDay(d, y)) return 'Hier';
+  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+function timeAgo(ts) {
+  const s = Math.max(0, (now() - ts) / 1000);
+  if (s < 60) return "à l'instant";
+  if (s < 3600) return `il y a ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `il y a ${Math.floor(s / 3600)} h`;
+  return fmtDate(ts);
+}
+
+/* =====================================================================
+   DONNÉES PAR DÉFAUT
+   ===================================================================== */
+function defaultData() {
+  return {
+    meta: { version: 1, createdAt: Date.now() },
+    settings: { appName: 'Mini Héros', pin: '1234' },
+    profiles: {
+      c1: { name: DEFAULT_SON_NAME, avatar: '🦸‍♂️', color: 'blue' },
+      c2: { name: 'Olivia', avatar: '🧚‍♀️', color: 'pink' }
+    },
+    scores: { c1: { points: 0, yellow: false }, c2: { points: 0, yellow: false } },
+    missions: {
+      m1: { emoji: '👟', title: 'Ranger ses chaussures et son manteau', points: 5, order: 1 },
+      m2: { emoji: '🍽️', title: 'Mettre ou débarrasser la table', points: 10, order: 2 },
+      m3: { emoji: '🛏️', title: "Faire son lit / s'habiller seul", points: 10, order: 3 },
+      m4: { emoji: '🧸', title: 'Ranger toute sa chambre', points: 20, order: 4 },
+      m5: { emoji: '🧹', title: 'Aider pour une grosse tâche', points: 25, order: 5 }
+    },
+    rewards: {
+      r1: { emoji: '🍨', title: 'Choisir le dessert ou le dessin animé', cost: 25, duration: 0, order: 1 },
+      r2: { emoji: '📱', title: '30 min de tablette', cost: 30, duration: 30, order: 2 },
+      r3: { emoji: '⏱️', title: '1h de tablette quand je veux', cost: 50, duration: 60, order: 3 },
+      r4: { emoji: '🎬', title: 'Soirée film + pop-corn', cost: 80, duration: 0, order: 4 },
+      r5: { emoji: '🎁', title: 'Petit cadeau à 10 €', cost: 200, duration: 0, order: 5 }
+    },
+    maluses: {
+      x1: { emoji: '🗣️', title: 'A répondu / mal parlé', points: 10, order: 1 },
+      x2: { emoji: '👂', title: "N'a pas écouté / refus d'obéir", points: 10, order: 2 },
+      x3: { emoji: '🏫', title: "Remarque ou mauvais comportement à l'école", points: 20, order: 3 },
+      x4: { emoji: '🥊', title: 'Violence : taper, pousser, mordre, casser volontairement', points: 30, order: 4 }
+    },
+    requests: {}, tickets: {}, log: {}
+  };
+}
+
+function normalize(input) {
+  const def = defaultData();
+  const d = (input && typeof input === 'object') ? clone(input) : def;
+  d.meta = d.meta || def.meta;
+  d.settings = Object.assign({}, def.settings, d.settings || {});
+  if (!/^\d{4}$/.test(String(d.settings.pin))) d.settings.pin = '1234';
+  d.settings.pin = String(d.settings.pin);
+  if (!d.settings.appName) d.settings.appName = 'Mini Héros';
+  d.profiles = d.profiles || {};
+  d.scores = d.scores || {};
+  KIDS.forEach(k => {
+    d.profiles[k] = Object.assign({}, def.profiles[k], d.profiles[k] || {});
+    if (!COLORS[d.profiles[k].color]) d.profiles[k].color = def.profiles[k].color;
+    const s = d.scores[k] || {};
+    d.scores[k] = { points: Math.max(0, int(s.points)), yellow: !!s.yellow };
+  });
+  ['missions', 'rewards', 'maluses', 'requests', 'tickets', 'log'].forEach(k => {
+    const v = d[k];
+    if (Array.isArray(v)) {
+      const o = {}; v.forEach((item, i) => { if (item) o[k.charAt(0) + 'a' + i] = item; }); d[k] = o;
+    } else if (!v || typeof v !== 'object') d[k] = {};
+  });
+  return d;
+}
+
+const list = coll => Object.entries(coll || {}).map(([id, v]) => Object.assign({ id }, v))
+  .sort((a, b) => (int(a.order) - int(b.order)) || (int(a.ts) - int(b.ts)));
+
+/* =====================================================================
+   APPAREIL (localStorage propre à chaque appareil)
+   ===================================================================== */
+const device = {
+  role: LS.get('mh_role', 'tablet'),
+  sound: LS.get('mh_sound', true)
+};
+if (!['tablet', 'papa', 'maman'].includes(device.role)) device.role = 'tablet';
+const isParentDevice = () => device.role !== 'tablet';
+const who = () => device.role === 'papa' ? 'Papa' : device.role === 'maman' ? 'Maman' : 'Parent';
+
+/* =====================================================================
+   STOCKAGE + SYNCHRONISATION
+   ===================================================================== */
+let state = normalize(LS.get('mh_data', null) || defaultData());
+const sync = { enabled: false, ready: false, connected: false, loading: false, db: null, root: null, errorShown: false };
+
+function persist() { LS.set('mh_data', state); }
+function getPath(obj, path) { return path.split('/').reduce((o, k) => (o == null ? undefined : o[k]), obj); }
+function setPath(obj, path, val) {
+  const ks = path.split('/'); let o = obj;
+  for (let i = 0; i < ks.length - 1; i++) {
+    if (o[ks[i]] == null || typeof o[ks[i]] !== 'object') o[ks[i]] = {};
+    o = o[ks[i]];
+  }
+  const last = ks[ks.length - 1];
+  if (val === null || val === undefined) delete o[last]; else o[last] = clone(val);
+}
+function fbError(err) {
+  console.warn('Firebase :', err);
+  if (!sync.errorShown) { sync.errorShown = true; toast('⚠️ Écriture refusée par Firebase : vérifiez les règles', 'error'); }
+}
+
+/* Mises à jour ciblées (multi-chemins) : jamais d'écrasement de toute la base. */
+function write(updates) {
+  Object.entries(updates).forEach(([p, v]) => setPath(state, p, v));
+  state = normalize(state);
+  persist();
+  onStateChanged();
+  if (sync.ready && sync.root) sync.root.update(updates).catch(fbError);
+}
+
+/* Transaction atomique (anti-conflit Papa/Maman). fn(cur) → nouvelle valeur, ou undefined pour annuler. */
+function txn(path, fn) {
+  if (sync.ready && sync.connected && sync.root) {
+    return sync.root.child(path).transaction(cur => fn(cur == null ? null : cur))
+      .then(res => ({ committed: res.committed, value: res.snapshot ? res.snapshot.val() : null }))
+      .catch(err => { fbError(err); return { committed: false }; });
+  }
+  const cur = clone(getPath(state, path));
+  const nv = fn(cur === undefined ? null : cur);
+  if (nv === undefined) return Promise.resolve({ committed: false });
+  write({ [path]: nv });
+  return Promise.resolve({ committed: true, value: nv });
+}
+
+function replaceAll(data) {
+  state = normalize(data);
+  persist();
+  if (sync.ready && sync.root) sync.root.set(clone(state)).catch(fbError);
+  onStateChanged();
+  render(true);
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    const timer = setTimeout(() => reject(new Error('timeout ' + src)), 15000);
+    s.onload = () => { clearTimeout(timer); resolve(); };
+    s.onerror = () => { clearTimeout(timer); s.remove(); reject(new Error('échec ' + src)); };
+    document.head.appendChild(s);
+  });
+}
+
+async function initFirebase() {
+  const cfg = FIREBASE_CONFIG;
+  if (!cfg || !cfg.databaseURL || !cfg.apiKey) { updateSyncPill(); return; }
+  if (sync.loading || sync.db) return;
+  sync.enabled = true; sync.loading = true;
+  try {
+    if (typeof firebase === 'undefined' || !firebase.database) {
+      await loadScript(`https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/firebase-app-compat.js`);
+      await loadScript(`https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/firebase-database-compat.js`);
+    }
+    const app = firebase.apps.length ? firebase.app() : firebase.initializeApp(cfg);
+    sync.db = firebase.database(app);
+    sync.root = sync.db.ref(FAMILY_KEY);
+    sync.db.ref('.info/connected').on('value', s => { sync.connected = !!s.val(); updateSyncPill(); });
+    sync.db.ref('.info/serverTimeOffset').on('value', s => { serverOffset = Number(s.val()) || 0; });
+    sync.root.on('value', snap => {
+      const val = snap.val();
+      if (!val || !val.settings) {
+        // Base encore vide : on y dépose les données de cet appareil.
+        sync.ready = true;
+        sync.root.set(clone(state)).catch(fbError);
+        updateSyncPill();
+        return;
+      }
+      sync.ready = true;
+      state = normalize(val);
+      persist();
+      onStateChanged();
+      updateSyncPill();
+    }, err => {
+      console.warn(err);
+      sync.ready = false;
+      updateSyncPill();
+      toast('⚠️ Accès Firebase refusé : vérifiez les règles et FAMILY_KEY', 'error');
+    });
+  } catch (e) {
+    console.warn('Firebase indisponible, passage en mode local.', e);
+    sync.db = null; sync.root = null;
+  } finally {
+    sync.loading = false;
+    updateSyncPill();
+  }
+}
+window.addEventListener('online', () => { if (!sync.db) initFirebase(); });
+
+function syncStatus() {
+  if (sync.ready && sync.connected) return { cls: 'on', dot: '🟢', txt: 'Synchronisé', title: 'Connecté : tous les appareils sont à jour en direct' };
+  if (sync.enabled) return { cls: '', dot: '🟠', txt: 'Mode local', title: 'Hors ligne : tout fonctionne, la synchro reprendra au retour du réseau' };
+  return { cls: '', dot: '🟠', txt: 'Mode local', title: 'Firebase non configuré : les données restent sur cet appareil' };
+}
+function syncPillHtml() {
+  const s = syncStatus();
+  return `<span class="sync-pill ${s.cls}" title="${esc(s.title)}"><span class="dot">${s.dot}</span><span class="txt">${s.txt}</span></span>`;
+}
+function updateSyncPill() {
+  const s = syncStatus();
+  $$('.sync-pill').forEach(el => {
+    el.className = 'sync-pill ' + s.cls; el.title = s.title;
+    el.innerHTML = `<span class="dot">${s.dot}</span><span class="txt">${s.txt}</span>`;
+  });
+  const info = $('#syncInfo'); if (info) info.textContent = s.title;
+}
+
+/* =====================================================================
+   SONS (Web Audio API — aucun fichier externe)
+   ===================================================================== */
+let actx = null;
+function audio() {
+  if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return null; actx = new C(); }
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+function tone(freq, start, dur, type = 'sine', vol = 0.2, slideTo = 0) {
+  const c = audio(); if (!c) return;
+  const t0 = c.currentTime + start;
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t0);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g); g.connect(c.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const SOUNDS = {
+  click: () => tone(660, 0, 0.08, 'triangle', 0.15),
+  pop: () => tone(520, 0, 0.14, 'sine', 0.2, 260),
+  success: () => { tone(523, 0, 0.12, 'triangle'); tone(784, 0.1, 0.2, 'triangle'); },
+  victory: () => { [523, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.11, 0.22, 'triangle', 0.22)); tone(1319, 0.48, 0.45, 'sine', 0.18); },
+  coin: () => { tone(988, 0, 0.08, 'square', 0.1); tone(1319, 0.08, 0.3, 'square', 0.1); },
+  error: () => { tone(220, 0, 0.15, 'sawtooth', 0.1); tone(170, 0.15, 0.22, 'sawtooth', 0.1); },
+  malus: () => { tone(392, 0, 0.22, 'triangle', 0.22, 330); tone(311, 0.22, 0.4, 'triangle', 0.22, 210); },
+  warn: () => { tone(880, 0, 0.12, 'square', 0.1); tone(880, 0.22, 0.12, 'square', 0.1); },
+  ding: () => { tone(1047, 0, 0.3, 'sine', 0.2); tone(1568, 0.12, 0.45, 'sine', 0.15); },
+  alarm: () => { for (let i = 0; i < 6; i++) { tone(880, i * 0.5, 0.22, 'square', 0.16); tone(660, i * 0.5 + 0.25, 0.22, 'square', 0.16); } }
+};
+function sound(name) { if (!device.sound) return; try { if (SOUNDS[name]) SOUNDS[name](); } catch (e) { /* audio indisponible */ } }
+const parentSound = name => { if (isParentDevice()) sound(name); };
+function unlockAudio() {
+  if (!device.sound) return;
+  const c = audio(); if (!c) return;
+  try { const b = c.createBuffer(1, 1, 22050), src = c.createBufferSource(); src.buffer = b; src.connect(c.destination); src.start(0); } catch (e) { /* ignoré */ }
+}
+['touchend', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, { once: true, passive: true }));
+
+/* =====================================================================
+   CONFETTIS (canvas)
+   ===================================================================== */
+const confetti = (() => {
+  const cv = $('#confetti'), ctx = cv.getContext('2d');
+  let parts = [], running = false;
+  const colors = ['#f43f5e', '#f59e0b', '#facc15', '#22c55e', '#3b82f6', '#a855f7', '#ec4899', '#14b8a6'];
+  function resize() { const d = window.devicePixelRatio || 1; cv.width = innerWidth * d; cv.height = innerHeight * d; }
+  window.addEventListener('resize', resize); resize();
+  function make(x, y, vx, vy, g) {
+    return { x, y, vx, vy, g, s: 7 + Math.random() * 8, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.35,
+      c: colors[Math.floor(Math.random() * colors.length)], shape: Math.random() < 0.3 ? 'c' : 'r', wob: Math.random() * 10 };
+  }
+  function burst(n = 160) {
+    const W = innerWidth, H = innerHeight;
+    for (let i = 0; i < n; i++) parts.push(make(W / 2 + (Math.random() - 0.5) * W * 0.3, H * 0.4, (Math.random() - 0.5) * 16, -Math.random() * 15 - 5, 0.32 + Math.random() * 0.12));
+    for (let i = 0; i < n / 2; i++) parts.push(make(Math.random() * W, -20 - Math.random() * H * 0.6, (Math.random() - 0.5) * 2, Math.random() * 2 + 2, 0.06));
+    if (!running) { running = true; requestAnimationFrame(tick); }
+  }
+  function tick() {
+    const d = window.devicePixelRatio || 1;
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    parts.forEach(p => {
+      p.vx *= 0.99; p.vy = Math.min(p.vy + p.g, 6.5); p.wob += 0.1;
+      p.x += p.vx + Math.sin(p.wob) * 0.6; p.y += p.vy; p.r += p.vr;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r); ctx.fillStyle = p.c;
+      if (p.shape === 'c') { ctx.beginPath(); ctx.arc(0, 0, p.s / 2.6, 0, Math.PI * 2); ctx.fill(); }
+      else ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2);
+      ctx.restore();
+    });
+    parts = parts.filter(p => p.y < innerHeight + 40);
+    if (parts.length) requestAnimationFrame(tick);
+    else { running = false; ctx.clearRect(0, 0, innerWidth, innerHeight); }
+  }
+  return { burst };
+})();
+
+function flashRed() { const f = $('#flash'); f.classList.remove('on'); void f.offsetWidth; f.classList.add('on'); }
+function bumpPoints() { setTimeout(() => $$('.ch-points,.cc-points').forEach(el => { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }), 60); }
+function shakeEl(el) { if (!el) return; el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); }
+
+/* =====================================================================
+   TOASTS & MODALES
+   ===================================================================== */
+function toast(msg, type = '') {
+  const box = $('#toasts'); if (!box) return;
+  const t = document.createElement('div');
+  t.className = 'toast ' + type; t.textContent = msg;
+  box.appendChild(t);
+  while (box.children.length > 3) box.firstChild.remove();
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 350); }, 3200);
+}
+function modal({ emoji = '❓', title = '', text = '', yesLabel = '✅ Oui', noLabel = 'Non', yesClass = 'btn-green' }) {
+  return new Promise(resolve => {
+    const el = $('#modal');
+    el.innerHTML = `<div class="modal-card"><div class="m-emoji">${esc(emoji)}</div><h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}
+      <div class="m-actions"><button class="btn btn-grey btn-lg" data-m="no">${esc(noLabel)}</button><button class="btn ${yesClass} btn-lg" data-m="yes">${esc(yesLabel)}</button></div></div>`;
+    el.classList.remove('hidden');
+    el.onclick = e => {
+      const b = e.target.closest('[data-m]');
+      if (b || e.target === el) {
+        el.classList.add('hidden'); el.onclick = null; el.innerHTML = '';
+        resolve(!!b && b.dataset.m === 'yes');
+      }
+    };
+  });
+}
+
+/* =====================================================================
+   DÉTECTION DES ÉVÉNEMENTS TEMPS RÉEL (confettis, badges, alertes)
+   ===================================================================== */
+let primed = false;
+const seenLog = new Set(), seenReq = new Set(), localLogIds = new Set();
+const timerPrev = {}, localTimerMarks = {}, expiredHandled = new Set();
+
+function onStateChanged() {
+  detectEvents();
+  updateBadges();
+  scheduleRender();
+}
+
+function detectEvents() {
+  const logIds = Object.keys(state.log), reqIds = Object.keys(state.requests);
+  if (!primed) {
+    logIds.forEach(i => seenLog.add(i));
+    reqIds.forEach(i => seenReq.add(i));
+    Object.entries(state.tickets).forEach(([id, t]) => { timerPrev[id] = t.timer ? t.timer.status : null; });
+    primed = true;
+    return;
+  }
+  logIds.filter(i => !seenLog.has(i)).map(i => Object.assign({ id: i }, state.log[i]))
+    .sort((a, b) => int(a.ts) - int(b.ts))
+    .forEach(e => { seenLog.add(e.id); if (now() - int(e.ts) < 120000) reactToLog(e); });
+
+  reqIds.forEach(i => {
+    if (seenReq.has(i)) return;
+    seenReq.add(i);
+    const r = state.requests[i]; const p = state.profiles[r.childId] || {};
+    if (isParentDevice() && now() - int(r.ts) < 120000) {
+      sound('ding'); vibrate([120, 60, 120]);
+      toast(`${p.avatar || '🧒'} ${p.name || ''} demande : ${r.emoji} ${r.title}`, 'info');
+    }
+  });
+
+  Object.entries(state.tickets).forEach(([id, t]) => {
+    const st = t.timer ? t.timer.status : null;
+    const prev = timerPrev[id];
+    timerPrev[id] = st;
+    if (prev === undefined || prev === st) return;
+    if (localTimerMarks[id] === st) { delete localTimerMarks[id]; return; }
+    const p = state.profiles[t.childId] || {};
+    const by = (t.timer && t.timer.by) || '';
+    if (st === 'done') {
+      if (expiredHandled.has(id)) return;
+      expiredHandled.add(id);
+      if (t.usedBy === 'Chrono') timerFinishedAlert(id, t);
+      else { sound('warn'); toast(`⏹️ Chrono de ${p.name} terminé${by ? ' par ' + by : ''}`, 'info'); }
+    } else if (st === 'running') {
+      if (isParentDevice()) sound('ding');
+      toast(`▶️ ${p.name} : chrono ${prev === 'paused' ? 'repris' : 'lancé'}${by ? ' (' + by + ')' : ''} — ${t.title}`, 'info');
+    } else if (st === 'paused') {
+      sound('pop');
+      toast(`⏸️ Chrono de ${p.name} en pause${by ? ' (' + by + ')' : ''}`, 'warn');
+    }
+  });
+}
+
+function reactToLog(e) {
+  const p = state.profiles[e.childId] || { name: '', avatar: '' };
+  const local = localLogIds.has(e.id);
+  if (device.role === 'tablet') {
+    if (e.type === 'gain') { confetti.burst(); sound('victory'); bumpPoints(); if (!local) toast(`🎉 Bravo ${p.name} ! +${e.points} ⭐`, 'success'); }
+    else if (e.type === 'malus') { sound('malus'); flashRed(); vibrate(300); if (!local) toast(`😟 ${p.name} : -${e.points} ⭐ (${e.label})`, 'error'); }
+    else if (e.type === 'yellow') { sound('warn'); if (!local) toast(`${e.label} — ${p.name}`, 'warn'); }
+  } else if (!local) {
+    const by = e.by || p.name;
+    if (e.type === 'gain') toast(`✅ ${by} : +${e.points} ⭐ pour ${p.name}`, 'success');
+    else if (e.type === 'malus') toast(`🔴 ${by} : -${e.points} ⭐ pour ${p.name}`, 'error');
+    else if (e.type === 'yellow') toast(`${by} : ${e.label} (${p.name})`, 'warn');
+    else if (e.type === 'purchase') { sound('ding'); toast(`🛍️ ${p.name} a acheté : ${e.emoji} ${e.label}`, 'info'); }
+  }
+}
+
+/* =====================================================================
+   LOGIQUE MÉTIER
+   ===================================================================== */
+function addLog(entry) {
+  const id = uid('l');
+  localLogIds.add(id);
+  const e = Object.assign({ ts: now(), by: '', points: 0, emoji: '⭐', label: '' }, entry);
+  const updates = { ['log/' + id]: e };
+  const ids = Object.keys(state.log).sort((a, b) => int(state.log[a].ts) - int(state.log[b].ts));
+  const extra = ids.length + 1 - 500;
+  for (let i = 0; i < extra; i++) updates['log/' + ids[i]] = null;
+  write(updates);
+}
+
+async function changePoints(cid, delta) {
+  let applied = 0;
+  const res = await txn('scores/' + cid, cur => {
+    const c = cur || { points: 0, yellow: false };
+    const p = Math.max(0, int(c.points));
+    const np = Math.max(0, p + delta);
+    applied = np - p;
+    return { points: np, yellow: !!c.yellow };
+  });
+  return res.committed ? applied : 0;
+}
+
+const requestsOf = cid => list(state.requests).filter(r => r.childId === cid);
+const findRequest = (cid, mid) => requestsOf(cid).find(r => r.missionId === mid);
+const nextReward = pts => list(state.rewards).filter(r => int(r.cost) > pts).sort((a, b) => int(a.cost) - int(b.cost))[0];
+function timerRemaining(t) {
+  const tm = t && t.timer; if (!tm) return 0;
+  if (tm.status === 'running') return Math.max(0, int(tm.endTime) - now());
+  if (tm.status === 'done') return 0;
+  return Math.max(0, int(tm.remainingMs, int(t.duration) * 60000));
+}
+const activeTimers = () => list(state.tickets).filter(t => t.status !== 'used' && t.timer && (t.timer.status === 'running' || t.timer.status === 'paused'))
+  .sort((a, b) => int(a.ts) - int(b.ts));
+const runningTimerOf = cid => activeTimers().find(t => t.childId === cid);
+const actor = () => (view.name === 'child' && view.childId) ? state.profiles[view.childId].name : who();
+
+async function toggleMission(mid) {
+  const cid = view.childId; const m = state.missions[mid]; if (!m) return;
+  const req = findRequest(cid, mid);
+  if (req) {
+    write({ ['requests/' + req.id]: null });
+    sound('pop'); toast('↩️ Demande annulée');
+    return;
+  }
+  const id = uid('q');
+  write({ ['requests/' + id]: { childId: cid, missionId: mid, emoji: m.emoji, title: m.title, points: int(m.points), ts: now() } });
+  sound('success'); vibrate(40);
+  toast('⏳ Demande envoyée à Papa et Maman !', 'info');
+}
+
+async function validateRequest(id, silent) {
+  const r = state.requests[id]; if (!r) return false;
+  const res = await txn('requests/' + id, cur => (cur ? null : undefined));
+  if (!res.committed) { if (!silent) toast("👍 Déjà traitée par l'autre parent", 'info'); return false; }
+  const applied = await changePoints(r.childId, int(r.points));
+  addLog({ childId: r.childId, type: 'gain', emoji: r.emoji, label: r.title, points: applied, by: who() });
+  if (!silent) { parentSound('success'); toast(`✅ +${applied} ⭐ pour ${state.profiles[r.childId].name}`, 'success'); }
+  return true;
+}
+
+async function buyReward(id, el) {
+  const cid = view.childId; const r = state.rewards[id]; if (!r) return;
+  const pts = state.scores[cid].points; const cost = int(r.cost);
+  if (pts < cost) { sound('error'); vibrate(80); shakeEl(el); toast(`Encore ${cost - pts} ⭐ pour ${r.emoji} !`, 'warn'); return; }
+  sound('click');
+  const ok = await modal({ emoji: r.emoji, title: `Utiliser ${cost} ⭐ pour ${r.title} ?`, text: `Il te restera ${pts - cost} ⭐`, yesLabel: '✅ Oui !', noLabel: '✖️ Non' });
+  if (!ok) { sound('pop'); return; }
+  const res = await txn('scores/' + cid, cur => {
+    const c = cur || { points: 0, yellow: false };
+    const p = int(c.points);
+    if (p < cost) return undefined;
+    return { points: p - cost, yellow: !!c.yellow };
+  });
+  if (!res.committed) { sound('error'); toast("Oups, pas assez d'étoiles !", 'error'); return; }
+  const tid = uid('t'); const dur = int(r.duration);
+  const ticket = { childId: cid, rewardId: id, emoji: r.emoji, title: r.title, cost, duration: dur, ts: now(), status: 'unused' };
+  if (dur > 0) ticket.timer = { status: 'idle', durationMs: dur * 60000, remainingMs: dur * 60000, endTime: 0 };
+  write({ ['tickets/' + tid]: ticket });
+  addLog({ childId: cid, type: 'purchase', emoji: r.emoji, label: r.title, points: cost, by: state.profiles[cid].name });
+  confetti.burst(220); sound('coin'); setTimeout(() => sound('victory'), 260); vibrate([60, 40, 60]);
+  toast(`🎟️ Ticket gagné : ${r.emoji} ${r.title}`, 'success');
+}
+
+/* ----- Chronos ----- */
+function timerUpdate(id, fields) {
+  const u = {};
+  Object.entries(fields).forEach(([k, v]) => { u[`tickets/${id}/timer/${k}`] = v; });
+  return u;
+}
+function startTimer(id) {
+  const t = state.tickets[id]; if (!t || !t.timer) return;
+  const total = int(t.timer.durationMs, int(t.duration) * 60000);
+  const rem = t.timer.status === 'idle' ? total : timerRemaining(t);
+  if (rem <= 0) return;
+  localTimerMarks[id] = 'running';
+  write(timerUpdate(id, { status: 'running', durationMs: total, remainingMs: rem, endTime: now() + rem, startedAt: t.timer.startedAt || now(), by: actor() }));
+  sound('success');
+  if (device.role === 'tablet' && view.name !== 'parent') openTimerOverlay(id);
+}
+function pauseTimer(id) {
+  const t = state.tickets[id]; if (!t || !t.timer || t.timer.status !== 'running') return;
+  localTimerMarks[id] = 'paused';
+  write(timerUpdate(id, { status: 'paused', remainingMs: timerRemaining(t), endTime: 0, by: actor() }));
+  sound('pop');
+}
+function resumeTimer(id) {
+  const t = state.tickets[id]; if (!t || !t.timer || t.timer.status !== 'paused') return;
+  const rem = timerRemaining(t);
+  localTimerMarks[id] = 'running';
+  write(timerUpdate(id, { status: 'running', remainingMs: rem, endTime: now() + rem, by: actor() }));
+  sound('success');
+}
+function finishTicket(id, usedBy) {
+  const t = state.tickets[id]; if (!t) return;
+  const u = { [`tickets/${id}/status`]: 'used', [`tickets/${id}/usedAt`]: now(), [`tickets/${id}/usedBy`]: usedBy };
+  if (t.timer) {
+    localTimerMarks[id] = 'done'; expiredHandled.add(id);
+    Object.assign(u, timerUpdate(id, { status: 'done', remainingMs: 0, endTime: 0, by: usedBy }));
+  }
+  write(u);
+}
+function checkExpired() {
+  Object.entries(state.tickets).forEach(([id, t]) => {
+    const tm = t.timer;
+    if (!tm || tm.status !== 'running' || int(tm.endTime) - now() > 0 || expiredHandled.has(id)) return;
+    const late = now() - int(tm.endTime);
+    expiredHandled.add(id);
+    localTimerMarks[id] = 'done';
+    write({
+      [`tickets/${id}/timer/status`]: 'done', [`tickets/${id}/timer/remainingMs`]: 0, [`tickets/${id}/timer/endTime`]: 0,
+      [`tickets/${id}/status`]: 'used', [`tickets/${id}/usedAt`]: now(), [`tickets/${id}/usedBy`]: 'Chrono'
+    });
+    if (late < 120000) timerFinishedAlert(id, t);
+  });
+}
+function timerFinishedAlert(id, t) {
+  const p = state.profiles[t.childId] || {};
+  if (device.role === 'tablet') {
+    openTimerOverlay(id, true);
+    sound('alarm'); setTimeout(() => sound('alarm'), 3200);
+    vibrate([400, 200, 400, 200, 800]);
+  } else {
+    sound('ding'); setTimeout(() => sound('ding'), 700); vibrate([200, 100, 200]);
+    toast(`⏰ Le chrono de ${p.name} est terminé !`, 'warn');
+  }
+}
+
+/* ----- Chrono plein écran ----- */
+const overlay = { id: null, finished: false, key: '' };
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (on && 'wakeLock' in navigator && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch (e) { wakeLock = null; }
+}
+function openTimerOverlay(id, finished = false) {
+  overlay.id = id; overlay.finished = finished; overlay.key = '';
+  $('#timerOverlay').classList.remove('hidden');
+  keepAwake(!finished);
+  updateTimerOverlay();
+}
+function closeTimerOverlay() {
+  overlay.id = null; overlay.finished = false;
+  $('#timerOverlay').classList.add('hidden');
+  keepAwake(false);
+}
+function updateTimerOverlay() {
+  if (!overlay.id) return;
+  const t = state.tickets[overlay.id];
+  if (!t || !t.timer) { closeTimerOverlay(); return; }
+  const el = $('#timerOverlay'), tm = t.timer;
+  const finished = overlay.finished || tm.status === 'done';
+  const rem = finished ? 0 : timerRemaining(t);
+  const total = int(tm.durationMs, int(t.duration) * 60000) || 1;
+  const frac = Math.max(0, Math.min(1, rem / total));
+  const p = state.profiles[t.childId] || {};
+  el.classList.toggle('finished', finished);
+  el.classList.toggle('paused', !finished && tm.status === 'paused');
+  $('#toWho').textContent = `${p.avatar || ''} ${p.name || ''}`;
+  $('#toTitle').textContent = `${t.emoji} ${t.title}`;
+  $('#toTime').textContent = finished ? '00:00' : fmtDur(rem);
+  const ring = $('#toRing');
+  ring.style.strokeDashoffset = String(565.49 * (1 - frac));
+  ring.classList.toggle('mid', frac <= 0.5 && frac > 0.2);
+  ring.classList.toggle('low', frac <= 0.2);
+  $('#toStatus').textContent = finished ? "⏰ C'est fini ! On range la tablette 👏" : tm.status === 'paused' ? '⏸️ En pause' : "▶️ C'est parti, amuse-toi bien !";
+  const key = finished ? 'f' : tm.status;
+  if (key !== overlay.key) {
+    overlay.key = key;
+    const id = esc(overlay.id);
+    $('#toActions').innerHTML = finished
+      ? `<button class="btn btn-green btn-lg" data-act="closeOverlay">👍 D'accord</button>`
+      : (tm.status === 'running'
+        ? `<button class="btn btn-yellow btn-lg" data-act="pauseTimer" data-id="${id}">⏸️ Pause</button>`
+        : `<button class="btn btn-green btn-lg" data-act="resumeTimer" data-id="${id}">▶️ Reprendre</button>`)
+        + `<button class="btn btn-grey btn-lg" data-act="closeOverlay">⬇️ Réduire</button>`;
+  }
+}
+
+/* =====================================================================
+   ÉTAT DE L'INTERFACE
+   ===================================================================== */
+const view = {
+  name: isParentDevice() ? 'parent' : 'home',
+  childId: null, childTab: 'missions', parentTab: 'valid',
+  creditChild: 'c1', bonusChild: 'c1', malusChild: 'c1',
+  pin: '', pinState: '', form: {}
+};
+let renderQueued = false, pendingRender = false;
+
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; render(); });
+}
+
+function render(force = false) {
+  const app = $('#app');
+  const ae = document.activeElement;
+  const typing = ae && app.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
+  const frozen = view.name === 'parent' && view.parentTab === 'settings';
+  if (!force && (typing || frozen)) {
+    if (!frozen) pendingRender = true;
+    updateBadges();
+    return;
+  }
+  pendingRender = false;
+  let html = '';
+  if (view.name === 'child' && state.profiles[view.childId]) html = viewChild();
+  else if (view.name === 'pin') html = viewPin();
+  else if (view.name === 'parent') html = viewParent();
+  else { view.name = 'home'; html = viewHome(); }
+  app.innerHTML = html;
+  document.body.className = (view.name === 'home' || view.name === 'pin') ? 'view-home' : '';
+  updateTimers();
+  updateBadges();
+  updateSyncPill();
+}
+
+document.addEventListener('focusout', () => {
+  setTimeout(() => { if (pendingRender) render(); }, 200);
+});
+
+function updateBadges() {
+  const n = Object.keys(state.requests).length;
+  const nt = list(state.tickets).filter(t => t.status !== 'used').length;
+  $$('[data-badge="pending"]').forEach(b => { b.textContent = n; b.style.display = n ? '' : 'none'; });
+  $$('[data-badge="tickets"]').forEach(b => { b.textContent = nt; b.style.display = nt ? '' : 'none'; });
+  document.title = (n && isParentDevice() ? `(${n}) ` : '') + state.settings.appName;
+  if (isParentDevice() && 'setAppBadge' in navigator) {
+    try { (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {}); } catch (e) { /* non supporté */ }
+  }
+}
+
+function updateTimers() {
+  $$('[data-timer]').forEach(el => {
+    const t = state.tickets[el.dataset.timer];
+    el.textContent = t ? fmtDur(timerRemaining(t)) : '--:--';
+  });
+  updateTimerOverlay();
+}
+
+/* =====================================================================
+   VUES
+   ===================================================================== */
+const pendingBadge = () => `<span class="badge" data-badge="pending" style="display:none">0</span>`;
+const soundBtn = () => `<button class="icon-btn sound-btn" data-act="toggleSound" aria-label="Son">${device.sound ? '🔊' : '🔇'}</button>`;
+
+function topBar() {
+  return `<header class="topbar">
+    <div class="brand"><span class="brand-star">⭐</span><span class="brand-name">${esc(state.settings.appName)}</span></div>
+    <div class="top-actions">${syncPillHtml()}${canOfferInstall() ? '<button class="icon-btn" data-act="installApp" aria-label="Installer">📲</button>' : ''}${soundBtn()}
+      <button class="parent-btn" data-act="openParent" aria-label="Mode Parent">${isParentDevice() ? '📱' : '🔒'}<span class="plbl">Mode Parent</span>${pendingBadge()}</button>
+    </div></header>`;
+}
+
+function progressHtml(points) {
+  const next = nextReward(points);
+  if (!next) return `<div class="progress-wrap"><div class="progress-label">🏆 Tout est débloqué !</div><div class="progress"><div style="width:100%"></div></div></div>`;
+  const pct = Math.min(100, Math.round(points / Math.max(1, int(next.cost)) * 100));
+  return `<div class="progress-wrap"><div class="progress-label">${esc(next.emoji)} encore ${int(next.cost) - points} ⭐</div><div class="progress"><div style="width:${pct}%"></div></div></div>`;
+}
+
+function viewHome() {
+  const cards = KIDS.map(cid => {
+    const p = state.profiles[cid], s = state.scores[cid];
+    const pend = requestsOf(cid).length, timer = runningTimerOf(cid);
+    return `<button class="child-card theme-${esc(p.color)}" data-act="openChild" data-id="${cid}">
+      <div class="cc-badges">
+        ${s.yellow ? '<span class="chip chip-yellow">🟨 Carton Jaune</span>' : ''}
+        ${pend ? `<span class="chip chip-wait">⏳ ${pend} en attente</span>` : ''}
+        ${timer ? `<span class="chip chip-timer">${timer.timer.status === 'paused' ? '⏸️' : '⏱️'} <span data-timer="${esc(timer.id)}">--:--</span></span>` : ''}
+      </div>
+      <div class="cc-avatar">${esc(p.avatar)}</div>
+      <div class="cc-name">${esc(p.name)}</div>
+      <div class="cc-points">${s.points} <span>⭐</span></div>
+      ${progressHtml(s.points)}
+    </button>`;
+  }).join('');
+  return `${topBar()}
+  <main class="home">
+    <h1 class="home-title">Qui es-tu ? 👋</h1>
+    <div class="profiles">${cards}</div>
+    ${isParentDevice() ? `<button class="btn btn-dark btn-lg btn-parent-big" data-act="openParent">📱 Tableau de bord ${esc(who())}</button>` : ''}
+  </main>`;
+}
+
+function viewChild() {
+  const cid = view.childId, p = state.profiles[cid], s = state.scores[cid];
+  let body = '';
+  if (view.childTab === 'shop') body = childShop(cid, s);
+  else if (view.childTab === 'log') body = childLog(cid);
+  else body = childMissions(cid);
+  const tab = (key, ti, label, cls) => `<button class="tab ${cls} ${view.childTab === key ? 'active' : ''}" data-act="childTab" data-tab="${key}"><span class="ti">${ti}</span>${label}</button>`;
+  return `<div class="theme-${esc(p.color)}">
+    <header class="child-head">
+      <button class="back-btn" data-act="goHome" aria-label="Retour">⬅️</button>
+      <div class="ch-id"><span class="ch-avatar">${esc(p.avatar)}</span><span class="ch-name">${esc(p.name)}</span>${s.yellow ? '<span class="ch-yellow" title="Carton jaune">🟨</span>' : ''}</div>
+      <div class="ch-points">${s.points} ⭐</div>
+    </header>
+    <main class="content">${body}</main>
+    <nav class="tabs">
+      ${tab('missions', '🎯', 'Missions', 't-green')}
+      ${tab('shop', '🛍️', 'Boutique', 't-gold')}
+      ${tab('log', '📜', 'Journal', 't-blue')}
+    </nav></div>`;
+}
+
+function childMissions(cid) {
+  const ms = list(state.missions);
+  if (!ms.length) return `<div class="empty"><span class="big">🎯</span>Aucune mission pour l'instant.</div>`;
+  return `<div class="section-title green">🎯 Mes missions <span style="font-size:1rem;opacity:.7">— touche pour demander tes ⭐</span></div>
+  <div class="grid">${ms.map(m => {
+    const req = findRequest(cid, m.id);
+    return `<button class="mission-card ${req ? 'pending' : ''}" data-act="toggleMission" data-id="${esc(m.id)}">
+      <div class="mc-emoji">${esc(m.emoji)}</div>
+      <div class="mc-title">${esc(m.title)}</div>
+      <div class="mc-points">${req ? '⏳ En attente de validation' : `+${int(m.points)} ⭐`}</div>
+      ${req ? '<div class="mc-hint">Touche pour annuler ↩️</div>' : ''}
+    </button>`;
+  }).join('')}</div>`;
+}
+
+function childShop(cid, s) {
+  const tickets = list(state.tickets).filter(t => t.childId === cid && t.status !== 'used').sort((a, b) => int(b.ts) - int(a.ts));
+  const ticketsHtml = tickets.length ? `<div class="tickets">${tickets.map(t => {
+    let actions;
+    if (int(t.duration) > 0 && t.timer) {
+      if (t.timer.status === 'idle') actions = `<button class="btn btn-green btn-lg" data-act="startTimer" data-id="${esc(t.id)}">▶️ Lancer le chrono</button>`;
+      else actions = `<div class="ticket-timer">${t.timer.status === 'paused' ? '⏸️' : '⏱️'} <span data-timer="${esc(t.id)}">--:--</span></div>
+        <button class="btn btn-blue" data-act="showTimer" data-id="${esc(t.id)}">🔍 Voir le chrono</button>`;
+    } else actions = `<div class="t-hint">🙌 Montre ce ticket à Papa ou Maman</div>`;
+    return `<div class="ticket"><div class="t-emoji">${esc(t.emoji)}</div><div class="t-body">
+      <div class="t-title">${esc(t.title)}</div><div class="t-date">🗓️ ${esc(fmtDate(t.ts))}</div>${actions}</div></div>`;
+  }).join('')}</div>` : `<div class="empty" style="padding:12px 12px 22px"><span class="big">🎟️</span>Pas encore de ticket. Gagne des ⭐ !</div>`;
+
+  const rewards = list(state.rewards);
+  const rewardsHtml = rewards.length ? `<div class="grid">${rewards.map(r => {
+    const cost = int(r.cost), ok = s.points >= cost;
+    const pct = Math.min(100, Math.round(s.points / Math.max(1, cost) * 100));
+    return `<button class="reward-card ${ok ? 'ok' : 'locked'}" data-act="buyReward" data-id="${esc(r.id)}">
+      ${int(r.duration) > 0 ? `<span class="rc-dur">⏱️ ${int(r.duration)} min</span>` : ''}
+      <div class="rc-emoji">${esc(r.emoji)}</div>
+      <div class="rc-title">${esc(r.title)}</div>
+      <div class="rc-cost">${cost} ⭐</div>
+      ${ok ? '<div class="rc-go">✨ Je choisis !</div>' : `<div class="progress"><div style="width:${pct}%"></div></div><div class="rc-need">Encore ${cost - s.points} ⭐</div>`}
+    </button>`;
+  }).join('')}</div>` : `<div class="empty"><span class="big">🛍️</span>La boutique est vide.</div>`;
+
+  return `<div class="section-title blue">🎟️ Mes Tickets</div>${ticketsHtml}
+    <div class="section-title gold">🛍️ Boutique</div>${rewardsHtml}`;
+}
+
+const LOG_TYPES = {
+  gain: { dot: '🟢', sign: '+' }, purchase: { dot: '🔵', sign: '-' },
+  malus: { dot: '🔴', sign: '-' }, yellow: { dot: '🟨', sign: '' }
+};
+function logRowsHtml(entries, showChild) {
+  if (!entries.length) return `<div class="empty"><span class="big">📜</span>Rien dans le journal pour l'instant.</div>`;
+  let lastDay = '', out = '';
+  entries.forEach(e => {
+    const day = fmtDay(e.ts);
+    if (day !== lastDay) { out += `<div class="log-day">${esc(day)}</div>`; lastDay = day; }
+    const T = LOG_TYPES[e.type] || LOG_TYPES.gain;
+    const p = state.profiles[e.childId] || {};
+    const pts = e.type === 'yellow' ? '🟨' : `${T.sign}${int(e.points)} ⭐`;
+    const meta = [fmtTime(e.ts), showChild ? `${p.avatar || ''} ${p.name || ''}` : '', e.by && e.type !== 'purchase' ? `par ${e.by}` : ''].filter(Boolean).join(' · ');
+    out += `<div class="log-row log-${esc(e.type)}"><div class="lr-emoji">${esc(e.emoji)}</div>
+      <div class="lr-body"><div class="lr-label">${T.dot} ${esc(e.label)}</div><div class="lr-meta">${esc(meta)}</div></div>
+      <div class="lr-points">${pts}</div></div>`;
+  });
+  return `<div class="log-list">${out}</div>`;
+}
+function childLog(cid) {
+  const entries = list(state.log).filter(e => e.childId === cid).sort((a, b) => int(b.ts) - int(a.ts)).slice(0, 150);
+  return `<div class="section-title blue">📜 Mon journal</div>${logRowsHtml(entries, false)}`;
+}
+
+function viewPin() {
+  const len = view.pin.length;
+  return `<div class="pin-screen">
+    <button class="back-btn" data-act="goHome" aria-label="Retour">⬅️</button>
+    <div class="pin-box">
+      <div class="pin-lock">🔒</div>
+      <h2>Code parent</h2>
+      <div class="pin-dots ${view.pinState}" id="pinDots">${[0, 1, 2, 3].map(i => `<span class="${i < len ? 'on' : ''}"></span>`).join('')}</div>
+      <div class="pin-pad">
+        ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `<button class="pin-key" data-act="pinKey" data-k="${n}">${n}</button>`).join('')}
+        <button class="pin-key alt" data-act="goHome" aria-label="Annuler">✖️</button>
+        <button class="pin-key" data-act="pinKey" data-k="0">0</button>
+        <button class="pin-key alt" data-act="pinDel" aria-label="Effacer">⌫</button>
+      </div>
+      ${state.settings.pin === '1234' ? '<p class="pin-hint">Code par défaut : 1234 — à changer dans Réglages</p>' : ''}
+    </div></div>`;
+}
+
+function viewParent() {
+  let body = '';
+  if (view.parentTab === 'malus') body = parentMalus();
+  else if (view.parentTab === 'tickets') body = parentTickets();
+  else if (view.parentTab === 'settings') body = parentSettings();
+  else body = parentValidations();
+  const tab = (key, ti, label, cls, badge) => `<button class="tab ${cls} ${view.parentTab === key ? 'active' : ''}" data-act="parentTab" data-tab="${key}"><span class="ti">${ti}</span>${label}${badge || ''}</button>`;
+  const devLabel = device.role === 'tablet' ? '📟 Tablette Enfants' : `📱 GSM ${who()}`;
+  return `<header class="parent-head dark-bar">
+      <button class="back-btn" data-act="closeParent" aria-label="Fermer">${isParentDevice() ? '🏠' : '🔓'}</button>
+      <div class="ph-title">🛡️ Mode Parent<small>${devLabel}</small></div>
+      ${syncPillHtml()}${soundBtn()}
+    </header>
+    <main class="content">${body}</main>
+    <nav class="tabs parent-tabs">
+      ${tab('valid', '✅', 'Validations', 't-green', pendingBadge())}
+      ${tab('malus', '🟥', 'Malus', 't-red')}
+      ${tab('tickets', '🎟️', 'Tickets', 't-blue', '<span class="badge" data-badge="tickets" style="display:none;background:var(--blue)">0</span>')}
+      ${tab('settings', '⚙️', 'Réglages', 't-dark')}
+    </nav>`;
+}
+
+function childPicker(key) {
+  return `<div class="picker">${KIDS.map(cid => {
+    const p = state.profiles[cid], s = state.scores[cid];
+    return `<button class="pick theme-${esc(p.color)} ${view[key] === cid ? 'sel' : ''}" data-act="pick" data-key="${key}" data-id="${cid}">
+      <span class="pa">${esc(p.avatar)}</span><span style="min-width:0"><span class="pn">${esc(p.name)} ${s.yellow ? '🟨' : ''}</span><small>${s.points} ⭐</small></span></button>`;
+  }).join('')}</div>`;
+}
+const bound = k => esc(view.form[k] == null ? '' : view.form[k]);
+
+function parentValidations() {
+  const reqs = list(state.requests).sort((a, b) => int(a.ts) - int(b.ts));
+  const n = reqs.length;
+  const reqHtml = n ? reqs.map(r => {
+    const p = state.profiles[r.childId] || {};
+    return `<div class="req-row"><div class="rr-avatar">${esc(p.avatar)}</div>
+      <div class="rr-body"><div class="rr-title">${esc(r.emoji)} ${esc(r.title)}</div>
+      <div class="rr-meta">${esc(p.name)} · ${esc(timeAgo(r.ts))} · <b style="color:var(--green-d)">+${int(r.points)} ⭐</b></div></div>
+      <div class="rr-actions"><button class="btn-round green" data-act="validateReq" data-id="${esc(r.id)}" aria-label="Valider">✅</button>
+      <button class="btn-round red" data-act="refuseReq" data-id="${esc(r.id)}" aria-label="Refuser">❌</button></div></div>`;
+  }).join('') : `<div class="empty"><span class="big">🎉</span>Aucune demande en attente</div>`;
+  const ms = list(state.missions);
+  return `<section class="card">
+      <div class="card-head"><h2>⏳ Missions à valider <span class="count ${n ? '' : 'zero'}">${n}</span></h2>
+      ${n > 1 ? '<button class="btn btn-green btn-sm" data-act="validateAll">✅ Tout valider</button>' : ''}</div>
+      ${reqHtml}
+    </section>
+    <section class="card">
+      <h2>⚡ Créditer directement une mission</h2>
+      ${childPicker('creditChild')}
+      ${ms.length ? `<div class="chip-grid">${ms.map(m => `<button class="mini-card green" data-act="creditMission" data-id="${esc(m.id)}"><span class="me">${esc(m.emoji)}</span><span>${esc(m.title)}</span><b>+${int(m.points)} ⭐</b></button>`).join('')}</div>` : '<p class="note">Aucune mission configurée.</p>'}
+    </section>
+    <section class="card">
+      <h2>🎁 Points bonus personnalisés</h2>
+      ${childPicker('bonusChild')}
+      <div class="quick">${[2, 5, 10, 15, 20, 50].map(v => `<button class="btn btn-ghost btn-sm" data-act="quickAmount" data-key="bonusAmount" data-val="${v}">+${v}</button>`).join('')}</div>
+      <div class="form-row">
+        <input class="input num" type="number" inputmode="numeric" min="1" max="1000" placeholder="Points" data-bind="bonusAmount" value="${bound('bonusAmount')}">
+        <input class="input" type="text" maxlength="80" placeholder="Motif (ex : très gentil avec sa sœur)" data-bind="bonusReason" value="${bound('bonusReason')}">
+      </div>
+      <button class="btn btn-green btn-block btn-lg" data-act="giveBonus">➕ Donner le bonus</button>
+    </section>`;
+}
+
+function parentMalus() {
+  const cid = view.malusChild, p = state.profiles[cid], s = state.scores[cid];
+  const xs = list(state.maluses);
+  return `<section class="card">${childPicker('malusChild')}</section>
+    <section class="card yellow-zone">
+      <h2>🟨 Carton jaune (avertissement)</h2>
+      ${s.yellow
+        ? `<div class="yc-status on"><span class="big">🟨</span><span>${esc(p.name)} a déjà un carton jaune.<br>Le prochain avertissement retire 10 ⭐.</span></div>`
+        : `<div class="yc-status off"><span class="big">✅</span><span>Pas de carton jaune pour ${esc(p.name)}.</span></div>`}
+      <button class="btn btn-yellow btn-block btn-lg" data-act="giveYellow">🟨 Donner un avertissement</button>
+      ${s.yellow ? '<button class="btn btn-ghost btn-block" style="margin-top:10px" data-act="removeYellow">🧽 Retirer le carton jaune</button>' : ''}
+    </section>
+    <section class="card red-zone">
+      <h2>🔴 Malus directs</h2>
+      ${xs.length ? `<div class="chip-grid">${xs.map(x => `<button class="mini-card red" data-act="applyMalus" data-id="${esc(x.id)}"><span class="me">${esc(x.emoji)}</span><span>${esc(x.title)}</span><b>-${int(x.points)} ⭐</b></button>`).join('')}</div>` : '<p class="note">Aucun malus configuré.</p>'}
+      <p class="note">Plancher strict : le score ne descend jamais sous 0 ⭐.</p>
+    </section>
+    <section class="card">
+      <h2>✍️ Malus personnalisé</h2>
+      <div class="form-row">
+        <input class="input num" type="number" inputmode="numeric" min="1" max="1000" placeholder="Points" data-bind="malusAmount" value="${bound('malusAmount')}">
+        <input class="input" type="text" maxlength="80" placeholder="Motif" data-bind="malusReason" value="${bound('malusReason')}">
+      </div>
+      <button class="btn btn-red btn-block btn-lg" data-act="customMalus">➖ Retirer les points</button>
+    </section>`;
+}
+
+function parentTickets() {
+  const timers = activeTimers();
+  const timersHtml = timers.length ? timers.map(t => {
+    const p = state.profiles[t.childId] || {}, running = t.timer.status === 'running';
+    return `<div class="ptimer ${running ? '' : 'paused'}">
+      <div class="pt-who">${esc(p.avatar)} ${esc(p.name)} — ${esc(t.emoji)} ${esc(t.title)}</div>
+      <div class="pt-time" data-timer="${esc(t.id)}">--:--</div>
+      <div class="pt-status">${running ? '▶️ En cours' : '⏸️ En pause'}${t.timer.by ? ` · ${esc(t.timer.by)}` : ''}</div>
+      <div class="btn-row">
+        ${running ? `<button class="btn btn-yellow" data-act="pauseTimer" data-id="${esc(t.id)}">⏸️ Pause</button>` : `<button class="btn btn-green" data-act="resumeTimer" data-id="${esc(t.id)}">▶️ Reprendre</button>`}
+        <button class="btn btn-red" data-act="endTimer" data-id="${esc(t.id)}">⏹️ Terminer</button>
+      </div></div>`;
+  }).join('') : `<div class="empty"><span class="big">⏱️</span>Aucun chrono en cours</div>`;
+
+  const open = list(state.tickets).filter(t => t.status !== 'used').sort((a, b) => int(a.ts) - int(b.ts));
+  const openHtml = open.length ? open.map(t => {
+    const p = state.profiles[t.childId] || {};
+    const timed = int(t.duration) > 0 && t.timer;
+    const extra = timed ? (t.timer.status === 'idle' ? `⏱️ ${int(t.duration)} min — pas encore lancé` : `⏱️ ${t.timer.status === 'paused' ? 'en pause' : 'en cours'}`) : '';
+    return `<div class="tk-row"><div class="rr-avatar">${esc(t.emoji)}</div>
+      <div class="rr-body"><div class="rr-title">${esc(t.title)}</div><div class="rr-meta">${esc(p.avatar)} ${esc(p.name)} · ${esc(fmtDate(t.ts))}${extra ? ' · ' + esc(extra) : ''}</div></div>
+      <div class="btn-row" style="flex:0 1 auto">
+        ${timed && t.timer.status === 'idle' ? `<button class="btn btn-blue btn-sm" data-act="startTimer" data-id="${esc(t.id)}">▶️ Lancer</button>` : ''}
+        <button class="btn btn-green btn-sm" data-act="giveTicket" data-id="${esc(t.id)}">✔️ Marquer comme donné</button>
+      </div></div>`;
+  }).join('') : `<div class="empty"><span class="big">🎟️</span>Aucun ticket à donner</div>`;
+
+  const done = list(state.tickets).filter(t => t.status === 'used').sort((a, b) => int(b.usedAt) - int(a.usedAt)).slice(0, 15);
+  const doneHtml = done.length ? done.map(t => {
+    const p = state.profiles[t.childId] || {};
+    return `<div class="tk-row done"><div class="rr-avatar">${esc(t.emoji)}</div><div class="rr-body"><div class="rr-title">${esc(t.title)}</div>
+      <div class="rr-meta">${esc(p.name)} · donné ${esc(fmtDate(t.usedAt || t.ts))}${t.usedBy ? ' · ' + esc(t.usedBy === 'Chrono' ? 'chrono terminé' : t.usedBy) : ''}</div></div></div>`;
+  }).join('') : '<p class="note">Rien pour l\'instant.</p>';
+
+  return `<section class="card"><h2>⏱️ Chronos tablette en cours</h2>${timersHtml}</section>
+    <section class="card"><h2>🎟️ Tickets à donner</h2>${openHtml}</section>
+    <section class="card"><h2>📦 Derniers tickets donnés</h2>${doneHtml}</section>
+    <section class="card"><h2>📜 Journal de la famille</h2>${logRowsHtml(list(state.log).sort((a, b) => int(b.ts) - int(a.ts)).slice(0, 40), true)}</section>`;
+}
+
+function editorHtml(kind) {
+  const items = list(state[kind]);
+  const isReward = kind === 'rewards';
+  const numKey = isReward ? 'cost' : 'points';
+  const row = (id, it, isNew) => {
+    const pre = `ed-${kind}-${id}`;
+    return `<div class="ed-row ${isNew ? 'new' : ''}">
+      <input class="input ed-emoji" id="${pre}-emoji" maxlength="8" value="${esc(it.emoji || '')}" placeholder="😀" aria-label="Émoji">
+      <input class="input ed-title" id="${pre}-title" maxlength="80" value="${esc(it.title || '')}" placeholder="${isNew ? 'Nouveau…' : 'Titre'}" aria-label="Titre">
+      <input class="input ed-num" id="${pre}-num" type="number" inputmode="numeric" min="0" max="10000" value="${isNew ? '' : int(it[numKey])}" placeholder="⭐" aria-label="Points">
+      ${isReward ? `<select class="input ed-dur" id="${pre}-dur" aria-label="Chrono">${DURATIONS.map(d => `<option value="${d}" ${int(it.duration) === d ? 'selected' : ''}>${d ? '⏱️ ' + d + ' min' : 'Sans chrono'}</option>`).join('')}</select>` : ''}
+      ${isNew
+        ? `<button class="btn btn-green btn-sm" data-act="saveItem" data-kind="${kind}" data-id="new">➕ Ajouter</button>`
+        : `<button class="btn-round blue" data-act="saveItem" data-kind="${kind}" data-id="${esc(id)}" aria-label="Enregistrer">💾</button>
+           <button class="btn-round red" data-act="deleteItem" data-kind="${kind}" data-id="${esc(id)}" aria-label="Supprimer">🗑️</button>`}
+    </div>`;
+  };
+  return items.map(it => row(it.id, it, false)).join('') + row('new', { emoji: '', title: '', duration: 0 }, true);
+}
+
+function parentSettings() {
+  const roleBtn = (role, icon, label) => `<button class="role-btn ${device.role === role ? 'sel' : ''}" data-act="setRole" data-role="${role}"><span>${icon}</span>${label}</button>`;
+  const kids = KIDS.map(cid => {
+    const p = state.profiles[cid];
+    return `<div class="kid-block">
+      <div class="form-row" style="margin-bottom:4px">
+        <input class="input ed-emoji" id="set-avatar-${cid}" maxlength="8" value="${esc(p.avatar)}" aria-label="Avatar">
+        <input class="input" id="set-name-${cid}" maxlength="24" value="${esc(p.name)}" aria-label="Prénom">
+        <select class="input" id="set-color-${cid}" style="flex:0 0 130px" aria-label="Couleur">${Object.entries(COLORS).map(([k, v]) => `<option value="${k}" ${p.color === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      </div>
+      <div class="avatar-picks">${AVATARS.map(a => `<button data-act="pickAvatar" data-id="${cid}" data-emoji="${esc(a)}">${a}</button>`).join('')}</div>
+      <button class="btn btn-blue btn-sm" data-act="saveChild" data-id="${cid}">💾 Enregistrer ${esc(p.name)}</button>
+    </div>`;
+  }).join('');
+  const cfgOk = !!(FIREBASE_CONFIG.databaseURL && FIREBASE_CONFIG.apiKey);
+  return `<section class="card">
+      <h2>📱 Rôle de cet appareil</h2>
+      <div class="role-grid">${roleBtn('tablet', '📟', 'Tablette Enfants')}${roleBtn('papa', '📱', 'GSM Papa')}${roleBtn('maman', '📱', 'GSM Maman')}</div>
+      <p class="note">${device.role === 'tablet' ? 'Le Mode Parent demande toujours le code PIN sur cet appareil.' : `Accès direct au tableau de bord. Vos actions sont signées « ${who()} » dans le journal.`}</p>
+      <div class="switch-row"><span>Sons sur cet appareil</span>${soundBtn()}</div>
+    </section>
+    <section class="card">
+      <h2>📲 Application</h2>
+      ${install.standalone
+        ? '<p class="note">✅ Mini Héros est installé et ouvert comme une application sur cet appareil.</p>'
+        : `<p class="note">Installez Mini Héros sur l'écran d'accueil pour l'ouvrir en plein écran, comme les autres applis.</p>
+           <button class="btn btn-green btn-block" data-act="installApp">📲 Installer sur cet appareil</button>`}
+    </section>
+    <section class="card">
+      <h2>🔄 Synchronisation</h2>
+      <p class="note" id="syncInfo">${esc(syncStatus().title)}</p>
+      <p class="note">${cfgOk ? `Base Firebase configurée · dossier « ${esc(FAMILY_KEY)} »` : 'Remplissez FIREBASE_CONFIG en haut du fichier index.html pour relier la tablette et les 2 GSM.'}</p>
+    </section>
+    <section class="card">
+      <h2>🏷️ Général</h2>
+      <label class="lbl" for="set-appName">Nom de l'application</label>
+      <input class="input" id="set-appName" maxlength="30" value="${esc(state.settings.appName)}" style="width:100%">
+      <label class="lbl" for="set-pin">Code PIN parent (4 chiffres)</label>
+      <input class="input num" id="set-pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" value="${esc(state.settings.pin)}" autocomplete="off">
+      <div style="margin-top:12px"><button class="btn btn-blue btn-sm" data-act="saveGeneral">💾 Enregistrer</button></div>
+    </section>
+    <section class="card"><h2>🧒 Enfants</h2>${kids}</section>
+    <section class="card"><h2>🎯 Missions</h2><p class="note">Émoji · titre · points gagnés</p>${editorHtml('missions')}</section>
+    <section class="card"><h2>🛍️ Récompenses</h2><p class="note">Émoji · titre · prix en ⭐ · chrono éventuel</p>${editorHtml('rewards')}</section>
+    <section class="card"><h2>🔴 Malus</h2><p class="note">Émoji · motif · points retirés</p>${editorHtml('maluses')}</section>
+    <section class="card">
+      <h2>💾 Sauvegarde</h2>
+      <div class="btn-row">
+        <button class="btn btn-blue" data-act="exportData">⬇️ Exporter (JSON)</button>
+        <button class="btn btn-ghost" data-act="importData">⬆️ Importer</button>
+      </div>
+      <button class="btn btn-red btn-block" style="margin-top:14px" data-act="resetData">🗑️ Tout réinitialiser</button>
+    </section>`;
+}
+
+/* =====================================================================
+   ACTIONS (délégation d'événements)
+   ===================================================================== */
+function goTop() { window.scrollTo(0, 0); }
+
+const ACTIONS = {
+  goHome() { applyUpdateIfReady(); view.name = 'home'; view.pin = ''; view.pinState = ''; view.form = {}; sound('click'); render(true); goTop(); },
+  openChild(d) { view.name = 'child'; view.childId = d.id; view.childTab = 'missions'; sound('click'); render(true); goTop(); },
+  childTab(d) { view.childTab = d.tab; sound('click'); render(true); goTop(); },
+  toggleMission(d) { toggleMission(d.id); },
+  buyReward(d, el) { buyReward(d.id, el); },
+  startTimer(d) { startTimer(d.id); },
+  pauseTimer(d) { pauseTimer(d.id); },
+  resumeTimer(d) { resumeTimer(d.id); },
+  showTimer(d) { sound('click'); openTimerOverlay(d.id); },
+  closeOverlay() { sound('click'); closeTimerOverlay(); },
+  async endTimer(d) {
+    const t = state.tickets[d.id]; if (!t) return;
+    const ok = await modal({ emoji: '⏹️', title: 'Terminer ce chrono ?', text: `${state.profiles[t.childId].name} — ${t.title}`, yesLabel: '⏹️ Terminer', yesClass: 'btn-red' });
+    if (!ok) return;
+    finishTicket(d.id, who()); parentSound('success'); toast('⏹️ Chrono terminé', 'info');
+  },
+  giveTicket(d) {
+    const t = state.tickets[d.id]; if (!t) return;
+    finishTicket(d.id, who()); parentSound('success');
+    toast(`✔️ ${t.emoji} ${t.title} donné à ${state.profiles[t.childId].name}`, 'success');
+  },
+  openParent() {
+    sound('click');
+    if (isParentDevice()) { view.name = 'parent'; }
+    else { view.name = 'pin'; view.pin = ''; view.pinState = ''; }
+    render(true); goTop();
+  },
+  closeParent() { ACTIONS.goHome(); },
+  pinKey(d) {
+    if (view.pin.length >= 4) return;
+    sound('click'); view.pin += d.k; view.pinState = '';
+    if (view.pin.length === 4) {
+      if (view.pin === state.settings.pin) {
+        view.pinState = 'ok'; render(true); sound('success');
+        setTimeout(() => { view.name = 'parent'; view.parentTab = 'valid'; view.pin = ''; view.pinState = ''; render(true); goTop(); }, 250);
+        return;
+      }
+      view.pinState = 'shake'; render(true); sound('error'); vibrate(200);
+      setTimeout(() => { view.pin = ''; view.pinState = ''; if (view.name === 'pin') render(true); }, 500);
+      return;
+    }
+    render(true);
+  },
+  pinDel() { view.pin = view.pin.slice(0, -1); view.pinState = ''; sound('click'); render(true); },
+  parentTab(d) { view.parentTab = d.tab; sound('click'); render(true); goTop(); },
+  pick(d) { view[d.key] = d.id; sound('click'); render(true); },
+  quickAmount(d) { view.form[d.key] = d.val; sound('click'); render(true); },
+  validateReq(d) { validateRequest(d.id, false); },
+  refuseReq(d) {
+    const r = state.requests[d.id]; if (!r) return;
+    write({ ['requests/' + d.id]: null }); parentSound('pop');
+    toast(`❌ Demande refusée (${state.profiles[r.childId].name})`, 'info');
+  },
+  async validateAll() {
+    const ids = list(state.requests).sort((a, b) => int(a.ts) - int(b.ts)).map(r => r.id);
+    let n = 0;
+    for (const id of ids) { if (await validateRequest(id, true)) n++; }
+    parentSound('victory'); toast(`✅ ${n} mission${n > 1 ? 's' : ''} validée${n > 1 ? 's' : ''}`, 'success');
+  },
+  async creditMission(d) {
+    const m = state.missions[d.id], cid = view.creditChild; if (!m) return;
+    const applied = await changePoints(cid, int(m.points));
+    addLog({ childId: cid, type: 'gain', emoji: m.emoji, label: m.title, points: applied, by: who() });
+    parentSound('success'); toast(`✅ +${applied} ⭐ pour ${state.profiles[cid].name}`, 'success');
+  },
+  async giveBonus() {
+    const amount = int(view.form.bonusAmount);
+    const reason = String(view.form.bonusReason || '').trim() || 'Bonus';
+    if (amount <= 0 || amount > 1000) { sound('error'); toast('Indiquez un nombre de points (1 à 1000)', 'error'); return; }
+    const cid = view.bonusChild;
+    const applied = await changePoints(cid, amount);
+    addLog({ childId: cid, type: 'gain', emoji: '🎁', label: reason, points: applied, by: who() });
+    view.form.bonusAmount = ''; view.form.bonusReason = '';
+    parentSound('success'); toast(`🎁 +${applied} ⭐ pour ${state.profiles[cid].name}`, 'success');
+    render(true);
+  },
+  async giveYellow() {
+    const cid = view.malusChild, p = state.profiles[cid], already = state.scores[cid].yellow;
+    const ok = await modal({ emoji: '🟨', title: `Avertissement pour ${p.name} ?`, text: already ? '2e carton jaune : -10 ⭐ et le carton est remis à zéro.' : '1er carton jaune : aucun point retiré.', yesLabel: '🟨 Oui', yesClass: 'btn-yellow' });
+    if (!ok) return;
+    let outcome = null;
+    const res = await txn('scores/' + cid, cur => {
+      const c = cur || { points: 0, yellow: false };
+      const pts = Math.max(0, int(c.points));
+      if (!c.yellow) { outcome = { second: false, applied: 0 }; return { points: pts, yellow: true }; }
+      const np = Math.max(0, pts - 10);
+      outcome = { second: true, applied: pts - np };
+      return { points: np, yellow: false };
+    });
+    if (!res.committed || !outcome) return;
+    if (outcome.second) {
+      addLog({ childId: cid, type: 'malus', emoji: '🟨', label: `2e carton jaune${outcome.applied < 10 ? ' (plancher 0 ⭐)' : ''}`, points: outcome.applied, by: who() });
+      parentSound('malus'); toast(`🟥 2e carton : -${outcome.applied} ⭐ pour ${p.name}`, 'error');
+    } else {
+      addLog({ childId: cid, type: 'yellow', emoji: '🟨', label: '🟨 Carton jaune (avertissement)', points: 0, by: who() });
+      parentSound('warn'); toast(`🟨 Carton jaune pour ${p.name}`, 'warn');
+    }
+  },
+  async removeYellow() {
+    const cid = view.malusChild;
+    const res = await txn('scores/' + cid, cur => {
+      const c = cur || { points: 0, yellow: false };
+      if (!c.yellow) return undefined;
+      return { points: Math.max(0, int(c.points)), yellow: false };
+    });
+    if (!res.committed) return;
+    addLog({ childId: cid, type: 'yellow', emoji: '🧽', label: 'Carton jaune retiré', points: 0, by: who() });
+    parentSound('success'); toast(`🧽 Carton jaune retiré pour ${state.profiles[cid].name}`, 'success');
+  },
+  async applyMalus(d) {
+    const x = state.maluses[d.id], cid = view.malusChild; if (!x) return;
+    const ok = await modal({ emoji: x.emoji, title: `-${int(x.points)} ⭐ pour ${state.profiles[cid].name} ?`, text: x.title, yesLabel: '➖ Retirer', yesClass: 'btn-red' });
+    if (!ok) return;
+    await applyMalusGeneric(cid, int(x.points), x.emoji, x.title);
+  },
+  async customMalus() {
+    const amount = int(view.form.malusAmount);
+    const reason = String(view.form.malusReason || '').trim() || 'Malus';
+    if (amount <= 0 || amount > 1000) { sound('error'); toast('Indiquez un nombre de points (1 à 1000)', 'error'); return; }
+    const cid = view.malusChild;
+    const ok = await modal({ emoji: '⚠️', title: `-${amount} ⭐ pour ${state.profiles[cid].name} ?`, text: reason, yesLabel: '➖ Retirer', yesClass: 'btn-red' });
+    if (!ok) return;
+    await applyMalusGeneric(cid, amount, '⚠️', reason);
+    view.form.malusAmount = ''; view.form.malusReason = '';
+    render(true);
+  },
+  setRole(d) {
+    device.role = d.role; LS.set('mh_role', d.role);
+    sound('success'); toast(`Appareil réglé : ${d.role === 'tablet' ? '📟 Tablette Enfants' : '📱 GSM ' + who()}`, 'success');
+    render(true);
+  },
+  toggleSound() {
+    device.sound = !device.sound; LS.set('mh_sound', device.sound);
+    if (device.sound) sound('click');
+    $$('.sound-btn').forEach(b => { b.textContent = device.sound ? '🔊' : '🔇'; });
+  },
+  saveGeneral() {
+    const name = $('#set-appName').value.trim() || 'Mini Héros';
+    const pin = $('#set-pin').value.trim();
+    if (!/^\d{4}$/.test(pin)) { sound('error'); toast('Le code PIN doit contenir exactement 4 chiffres', 'error'); return; }
+    write({ 'settings/appName': name, 'settings/pin': pin });
+    sound('success'); toast('💾 Réglages enregistrés', 'success'); render(true);
+  },
+  pickAvatar(d) { const inp = $('#set-avatar-' + d.id); if (inp) inp.value = d.emoji; sound('click'); },
+  saveChild(d) {
+    const name = $('#set-name-' + d.id).value.trim();
+    const avatar = $('#set-avatar-' + d.id).value.trim() || '🙂';
+    const color = $('#set-color-' + d.id).value;
+    if (!name) { sound('error'); toast('Le prénom ne peut pas être vide', 'error'); return; }
+    write({ [`profiles/${d.id}/name`]: name, [`profiles/${d.id}/avatar`]: avatar, [`profiles/${d.id}/color`]: COLORS[color] ? color : 'blue' });
+    sound('success'); toast(`💾 Profil de ${name} enregistré`, 'success'); render(true);
+  },
+  saveItem(d) {
+    const pre = `ed-${d.kind}-${d.id}`;
+    const emoji = $(`#${pre}-emoji`).value.trim() || '⭐';
+    const title = $(`#${pre}-title`).value.trim();
+    const num = int($(`#${pre}-num`).value, -1);
+    if (!title) { sound('error'); toast('Le titre est obligatoire', 'error'); return; }
+    if (num < 0 || num > 10000) { sound('error'); toast('Nombre de points invalide', 'error'); return; }
+    const isNew = d.id === 'new';
+    const id = isNew ? uid(d.kind.charAt(0)) : d.id;
+    const old = state[d.kind][id] || {};
+    const order = isNew ? Math.max(0, ...list(state[d.kind]).map(i => int(i.order))) + 1 : int(old.order);
+    const item = { emoji, title, order };
+    if (d.kind === 'rewards') { item.cost = num; item.duration = int($(`#${pre}-dur`).value); }
+    else item.points = num;
+    write({ [`${d.kind}/${id}`]: item });
+    sound('success'); toast(isNew ? '➕ Ajouté' : '💾 Enregistré', 'success'); render(true);
+  },
+  async deleteItem(d) {
+    const it = state[d.kind][d.id]; if (!it) return;
+    const ok = await modal({ emoji: '🗑️', title: 'Supprimer ?', text: `${it.emoji} ${it.title}`, yesLabel: '🗑️ Supprimer', yesClass: 'btn-red' });
+    if (!ok) return;
+    write({ [`${d.kind}/${d.id}`]: null });
+    sound('pop'); toast('🗑️ Supprimé'); render(true);
+  },
+  exportData() {
+    const data = Object.assign({ exportedAt: new Date().toISOString(), app: 'mini-heros' }, clone(state));
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `mini-heros-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast('⬇️ Sauvegarde téléchargée', 'success');
+  },
+  importData() { $('#importFile').value = ''; $('#importFile').click(); },
+  async resetData() {
+    const ok1 = await modal({ emoji: '⚠️', title: 'Tout réinitialiser ?', text: 'Points, tickets, journal et réglages seront effacés sur tous les appareils.', yesLabel: 'Continuer', yesClass: 'btn-red' });
+    if (!ok1) return;
+    const ok2 = await modal({ emoji: '🗑️', title: 'Vraiment sûr ?', text: 'Cette action est définitive. Pensez à exporter une sauvegarde avant.', yesLabel: '🗑️ Tout effacer', yesClass: 'btn-red' });
+    if (!ok2) return;
+    replaceAll(defaultData());
+    toast('🗑️ Application réinitialisée', 'info');
+  }
+};
+
+async function applyMalusGeneric(cid, amount, emoji, label) {
+  const applied = await changePoints(cid, -amount);
+  const removed = -applied;
+  addLog({ childId: cid, type: 'malus', emoji, label: label + (removed < amount ? ' (plancher 0 ⭐)' : ''), points: removed, by: who() });
+  parentSound('malus'); toast(`🔴 -${removed} ⭐ pour ${state.profiles[cid].name}`, 'error');
+}
+
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const fn = ACTIONS[el.dataset.act];
+  if (fn) { e.preventDefault(); fn(el.dataset, el); }
+});
+document.addEventListener('input', e => {
+  const k = e.target.dataset && e.target.dataset.bind;
+  if (k) view.form[k] = e.target.value;
+});
+document.addEventListener('keydown', e => {
+  if (view.name !== 'pin') return;
+  if (/^\d$/.test(e.key)) ACTIONS.pinKey({ k: e.key });
+  else if (e.key === 'Backspace') ACTIONS.pinDel();
+  else if (e.key === 'Escape') ACTIONS.goHome();
+});
+$('#importFile').addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0]; if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || typeof data !== 'object' || !data.profiles || !data.scores) throw new Error('format');
+    delete data.exportedAt; delete data.app;
+    const ok = await modal({ emoji: '⬆️', title: 'Importer cette sauvegarde ?', text: 'Les données actuelles seront remplacées sur tous les appareils.', yesLabel: '⬆️ Importer', yesClass: 'btn-blue' });
+    if (!ok) return;
+    replaceAll(data);
+    toast('⬆️ Sauvegarde importée', 'success');
+  } catch (err) {
+    sound('error'); toast('Fichier de sauvegarde invalide', 'error');
+  }
+});
+
+/* =====================================================================
+   INSTALLATION (Android : bouton "Installer" · iPhone/iPad : mode d'emploi)
+   ===================================================================== */
+const UA = navigator.userAgent;
+const isIOS = /iphone|ipad|ipod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isIOSSafari = isIOS && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA\//i.test(UA);
+const isAndroid = /android/i.test(UA);
+const install = {
+  deferred: null,
+  installed: false,
+  standalone: window.matchMedia('(display-mode: standalone)').matches || window.matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true
+};
+const INSTALL_SNOOZE_MS = 3 * 24 * 3600 * 1000;
+
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  install.deferred = e;
+  showInstallBar(false);
+  if (view.name === 'parent' && view.parentTab === 'settings') render(true);
+});
+window.addEventListener('appinstalled', () => {
+  install.deferred = null; install.installed = true;
+  hideInstallBar();
+  confetti.burst(120); sound('victory');
+  toast("🎉 Mini Héros est installé ! Ouvrez-le depuis l'écran d'accueil.", 'success');
+});
+
+function canOfferInstall() { return !install.standalone && !install.installed && /^https?:$/.test(location.protocol); }
+
+function showInstallBar(force) {
+  if (!canOfferInstall()) return;
+  if (!force && Date.now() - int(LS.get('mh_install_snooze', 0)) < INSTALL_SNOOZE_MS) return;
+  const bar = $('#installBar');
+  const sub = install.deferred ? 'En plein écran, comme une vraie appli' : (isIOS ? "Sur l'écran d'accueil de votre " + (/ipad/i.test(UA) || navigator.maxTouchPoints > 1 && !/iphone/i.test(UA) ? 'iPad' : 'iPhone') : "Sur l'écran d'accueil, comme une vraie appli");
+  bar.innerHTML = `<img class="ib-icon" src="icons/icon-192.png" alt="">
+    <div class="ib-text"><b>📲 Installer ${esc(state.settings.appName)}</b><small>${esc(sub)}</small></div>
+    <button class="btn btn-green btn-sm" data-act="installApp">${install.deferred ? 'Installer' : 'Comment ?'}</button>
+    <button class="ib-close" data-act="snoozeInstall" aria-label="Plus tard">✕</button>`;
+  bar.classList.remove('hidden');
+}
+function hideInstallBar() { $('#installBar').classList.add('hidden'); }
+
+function installHelpHtml() {
+  if (isIOS) {
+    const notSafari = !isIOSSafari ? `<li><span class="n">0</span><span>Ouvrez ce lien dans <b>Safari</b> 🧭 (recommandé)</span></li>` : '';
+    return `${notSafari}
+      <li><span class="n">1</span><span>Touchez <span class="k">⬆️</span> <b>Partager</b> (en bas de l'écran sur iPhone, en haut sur iPad)</span></li>
+      <li><span class="n">2</span><span>Faites défiler et touchez <span class="k">➕</span> <b>Sur l'écran d'accueil</b></span></li>
+      <li><span class="n">3</span><span>Laissez « Ouvrir comme app » activé, puis touchez <b>Ajouter</b></span></li>`;
+  }
+  return `<li><span class="n">1</span><span>Touchez le menu <span class="k">⋮</span> ou <span class="k">☰</span> du navigateur</span></li>
+    <li><span class="n">2</span><span>Choisissez <b>« Installer l'application »</b> ou <b>« Ajouter à l'écran d'accueil »</b></span></li>
+    <li><span class="n">3</span><span>Confirmez avec <b>Installer</b> / <b>Ajouter</b></span></li>
+    ${isAndroid ? '<li><span class="n">💡</span><span>Avec <b>Google Chrome</b>, un bouton « Installer » apparaît automatiquement.</span></li>' : ''}`;
+}
+function showInstallHelp() {
+  const el = $('#modal');
+  el.innerHTML = `<div class="modal-card"><div class="m-emoji">📲</div><h3>Installer ${esc(state.settings.appName)}</h3>
+    <p>Elle s'ouvrira en plein écran depuis l'écran d'accueil, comme les autres applis.</p>
+    <ul class="steps">${installHelpHtml()}</ul>
+    <div class="m-actions" style="grid-template-columns:1fr"><button class="btn btn-green btn-lg" data-m="yes">👍 Compris</button></div></div>`;
+  el.classList.remove('hidden');
+  el.onclick = e => { if (e.target.closest('[data-m]') || e.target === el) { el.classList.add('hidden'); el.onclick = null; el.innerHTML = ''; } };
+}
+
+ACTIONS.installApp = async () => {
+  sound('click');
+  if (install.deferred) {
+    const ev = install.deferred; install.deferred = null;
+    ev.prompt();
+    try { const choice = await ev.userChoice; if (choice && choice.outcome === 'accepted') hideInstallBar(); } catch (e) { /* ignoré */ }
+    return;
+  }
+  showInstallHelp();
+};
+ACTIONS.snoozeInstall = () => { LS.set('mh_install_snooze', Date.now()); hideInstallBar(); sound('pop'); };
+
+/* Service worker : installation + ouverture hors ligne */
+let updateReady = false;
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  const hadController = !!navigator.serviceWorker.controller;
+  window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch(err => console.warn('Service worker :', err)); });
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) updateReady = true; });
+}
+function applyUpdateIfReady() {
+  if (updateReady && !overlay.id && $('#modal').classList.contains('hidden')) { updateReady = false; location.reload(); }
+}
+
+/* Confort tablette : pas de menu "copier/enregistrer l'image" sur appui long */
+document.addEventListener('contextmenu', e => { if (!e.target.closest('input,textarea,select')) e.preventDefault(); });
+
+/* =====================================================================
+   DÉMARRAGE
+   ===================================================================== */
+setInterval(() => { updateTimers(); checkExpired(); }, 500);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    applyUpdateIfReady();
+    updateTimers(); checkExpired();
+    if (overlay.id && !overlay.finished) keepAwake(true);
+    if (sync.ready && !sync.connected && sync.db) { try { sync.db.goOnline(); } catch (e) { /* ignoré */ } }
+  }
+});
+setInterval(() => { if (view.name === 'parent' && view.parentTab === 'valid' && Object.keys(state.requests).length) scheduleRender(); }, 30000);
+
+detectEvents();
+render(true);
+initFirebase();
+setTimeout(() => showInstallBar(false), 3500);
+</script>
+</body>
+</html>
+
+````
+
+---
+*Fin du dossier — 5 fichiers texte inclus en entier.*
