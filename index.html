@@ -261,6 +261,9 @@ body{-webkit-touch-callout:none;touch-action:manipulation}
 .mini-card .me{font-size:1.9rem;line-height:1.1}
 .mini-card b{font-size:1.05rem}
 .mini-card.green{background:#dcfce7;color:#14532d;box-shadow:0 3px 0 #86efac}
+.mini-card.add{background:#f5f3ff;color:var(--purple);border:3px dashed #c4b5fd;box-shadow:none}
+.mini-card.add .me{font-size:2rem}
+.mini-card.gold{background:#fef3c7;color:#78350f;box-shadow:0 3px 0 #fcd34d}
 .mini-card.red{background:#fee2e2;color:#7f1d1d;box-shadow:0 3px 0 #fca5a5;min-height:120px}
 .form-row{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
 .input{flex:1;min-width:0;padding:12px 14px;border-radius:14px;border:2px solid #e5e7eb;font-size:1rem;background:#fff}
@@ -320,6 +323,20 @@ body{-webkit-touch-callout:none;touch-action:manipulation}
 
 /* ---------- Modales / overlays ---------- */
 .modal{position:fixed;inset:0;z-index:100;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+.modal-card.ie{text-align:left;max-height:calc(100dvh - 40px);overflow:auto;padding:20px 18px}
+.modal-card.ie h3{text-align:center}
+.ie-preview{display:flex;justify-content:center;margin:6px 0 8px}
+.ie-preview span{font-size:4.4rem;line-height:1;width:110px;height:110px;border-radius:28px;background:#f5f3ff;display:flex;align-items:center;justify-content:center;border:3px solid #ddd6fe}
+.emoji-pick{max-height:230px;overflow:auto;border:2px solid #f3f4f6;border-radius:16px;padding:6px 8px;margin-bottom:8px;-webkit-overflow-scrolling:touch}
+.eg-title{font-weight:800;font-size:.85rem;color:var(--muted);margin:8px 2px 4px}
+.emoji-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:4px}
+.emoji-grid button{height:46px;font-size:1.65rem;border-radius:12px;background:#f9fafb;border:2px solid transparent}
+.emoji-grid button.sel{background:#ede9fe;border-color:var(--purple)}
+.modal-card.ie .input{width:100%}
+.ie-num{display:flex;gap:6px;align-items:center}
+.ie-num button{width:48px;height:48px;border-radius:14px;background:#f3f4f6;font-weight:800;font-size:1rem;flex:none}
+.ie-num .input{text-align:center;font-size:1.3rem;font-weight:800}
+.ed-emo{font-size:2rem;line-height:1;flex:none;width:44px;text-align:center}
 .modal-card{background:#fff;border-radius:30px;padding:26px 22px 22px;max-width:440px;width:100%;text-align:center;animation:pop .25s}
 .m-emoji{font-size:4.8rem;line-height:1.1}
 .modal-card h3{font-size:1.55rem;margin:6px 0;line-height:1.15}
@@ -1399,7 +1416,9 @@ function parentValidations() {
     <section class="card">
       <h2>⚡ Créditer directement une mission</h2>
       ${childPicker('creditChild')}
-      ${ms.length ? `<div class="chip-grid">${ms.map(m => `<button class="mini-card green" data-act="creditMission" data-id="${esc(m.id)}"><span class="me">${esc(m.emoji)}</span><span>${esc(m.title)}</span><b>+${int(m.points)} ⭐</b></button>`).join('')}</div>` : '<p class="note">Aucune mission configurée.</p>'}
+      <div class="chip-grid">${ms.map(m => `<button class="mini-card green" data-act="creditMission" data-id="${esc(m.id)}"><span class="me">${esc(m.emoji)}</span><span>${esc(m.title)}</span><b>+${int(m.points)} ⭐</b></button>`).join('')}
+        <button class="mini-card add" data-act="addItem" data-kind="missions"><span class="me">➕</span><span>Nouvelle mission</span></button></div>
+      <p class="note">✏️ Pour modifier ou supprimer une mission : ⚙️ Réglages.</p>
     </section>
     <section class="card">
       <h2>🎁 Points bonus personnalisés</h2>
@@ -1427,7 +1446,8 @@ function parentMalus() {
     </section>
     <section class="card red-zone">
       <h2>🔴 Malus directs</h2>
-      ${xs.length ? `<div class="chip-grid">${xs.map(x => `<button class="mini-card red" data-act="applyMalus" data-id="${esc(x.id)}"><span class="me">${esc(x.emoji)}</span><span>${esc(x.title)}</span><b>-${int(x.points)} ⭐</b></button>`).join('')}</div>` : '<p class="note">Aucun malus configuré.</p>'}
+      <div class="chip-grid">${xs.map(x => `<button class="mini-card red" data-act="applyMalus" data-id="${esc(x.id)}"><span class="me">${esc(x.emoji)}</span><span>${esc(x.title)}</span><b>-${int(x.points)} ⭐</b></button>`).join('')}
+        <button class="mini-card add" data-act="addItem" data-kind="maluses"><span class="me">➕</span><span>Nouveau malus</span></button></div>
       <p class="note">Plancher strict : le score ne descend jamais sous 0 ⭐.</p>
     </section>
     <section class="card">
@@ -1477,27 +1497,89 @@ function parentTickets() {
   return `<section class="card"><h2>⏱️ Chronos tablette en cours</h2>${timersHtml}</section>
     <section class="card"><h2>🎟️ Tickets à donner</h2>${openHtml}</section>
     <section class="card"><h2>📦 Derniers tickets donnés</h2>${doneHtml}</section>
+    <section class="card"><h2>🛍️ Récompenses de la boutique</h2>
+      <p class="note">Touchez une récompense pour la modifier.</p>
+      <div class="chip-grid">${list(state.rewards).map(r => `<button class="mini-card gold" data-act="editItem" data-kind="rewards" data-id="${esc(r.id)}"><span class="me">${esc(r.emoji)}</span><span>${esc(r.title)}</span><b>${int(r.cost)} ⭐${int(r.duration) ? ' · ⏱️ ' + int(r.duration) + ' min' : ''}</b></button>`).join('')}
+        <button class="mini-card add" data-act="addItem" data-kind="rewards"><span class="me">➕</span><span>Nouvelle récompense</span></button></div>
+    </section>
     <section class="card"><h2>📜 Journal de la famille</h2>${logRowsHtml(list(state.log).sort((a, b) => int(b.ts) - int(a.ts)).slice(0, 40), true)}</section>`;
 }
 
+const KIND_INFO = {
+  missions: { newLabel: 'Nouvelle mission', numLabel: 'Points gagnés ⭐', def: '⭐', placeholder: 'Ex : Arroser les plantes', sign: '+' },
+  rewards: { newLabel: 'Nouvelle récompense', numLabel: 'Prix en ⭐', def: '🎁', placeholder: 'Ex : Sortie au parc', sign: '' },
+  maluses: { newLabel: 'Nouveau malus', numLabel: 'Points retirés ⭐', def: '⚠️', placeholder: 'Ex : Crier à table', sign: '-' }
+};
+const EMOJI_GROUPS = [
+  ['🏠 Maison', '👟 🧥 🍽️ 🛏️ 🧸 🧹 🧺 🧽 🪣 🗑️ 🚿 🛁 🪥 👕 🧦 🍳 🥕 🐕 🐈 🪴 💧 🧼 🚽 🛒'],
+  ['📚 École', '📚 ✏️ 📝 🎒 🧮 🔤 🎹 🎨 📖 🧠 🏫 ✂️ 🎻 🔬'],
+  ['💪 Bien grandir', '😊 🤝 🙏 💪 🏃 ⚽ 🚴 🏊 🧘 🌙 ⏰ 🥦 🍎 🦷 🫶 ⭐'],
+  ['🎁 Récompenses', '🍨 🍦 🍫 🍬 🍿 🎬 📱 ⏱️ 🎮 🎁 🎈 🎡 🏖️ 🛝 🍕 🍔 🎉 👑 💰 🎟️ 🚗 📺 🏰 🧁 🦄 🎠'],
+  ['⚠️ Bêtises', '🗣️ 👂 🥊 😡 😤 🙉 🤥 💥 📵 😢 ⚠️ 🚫 👎 🙅 🧨 🍭']
+];
+
 function editorHtml(kind) {
-  const items = list(state[kind]);
-  const isReward = kind === 'rewards';
-  const numKey = isReward ? 'cost' : 'points';
-  const row = (id, it, isNew) => {
-    const pre = `ed-${kind}-${id}`;
-    return `<div class="ed-row ${isNew ? 'new' : ''}">
-      <input class="input ed-emoji" id="${pre}-emoji" maxlength="8" value="${esc(it.emoji || '')}" placeholder="😀" aria-label="Émoji">
-      <input class="input ed-title" id="${pre}-title" maxlength="80" value="${esc(it.title || '')}" placeholder="${isNew ? 'Nouveau…' : 'Titre'}" aria-label="Titre">
-      <input class="input ed-num" id="${pre}-num" type="number" inputmode="numeric" min="0" max="10000" value="${isNew ? '' : int(it[numKey])}" placeholder="⭐" aria-label="Points">
-      ${isReward ? `<select class="input ed-dur" id="${pre}-dur" aria-label="Chrono">${DURATIONS.map(d => `<option value="${d}" ${int(it.duration) === d ? 'selected' : ''}>${d ? '⏱️ ' + d + ' min' : 'Sans chrono'}</option>`).join('')}</select>` : ''}
-      ${isNew
-        ? `<button class="btn btn-green btn-sm" data-act="saveItem" data-kind="${kind}" data-id="new">➕ Ajouter</button>`
-        : `<button class="btn-round blue" data-act="saveItem" data-kind="${kind}" data-id="${esc(id)}" aria-label="Enregistrer">💾</button>
-           <button class="btn-round red" data-act="deleteItem" data-kind="${kind}" data-id="${esc(id)}" aria-label="Supprimer">🗑️</button>`}
-    </div>`;
+  const info = KIND_INFO[kind];
+  return list(state[kind]).map(it => `<div class="ed-row"><span class="ed-emo">${esc(it.emoji)}</span>
+      <div class="rr-body"><div class="rr-title">${esc(it.title)}</div>
+      <div class="rr-meta">${kind === 'rewards' ? int(it.cost) + ' ⭐' + (int(it.duration) ? ' · ⏱️ ' + int(it.duration) + ' min' : '') : info.sign + int(it.points) + ' ⭐'}</div></div>
+      <button class="btn-round blue" data-act="editItem" data-kind="${kind}" data-id="${esc(it.id)}" aria-label="Modifier">✏️</button></div>`).join('')
+    + `<button class="btn btn-green btn-block" style="margin-top:6px" data-act="addItem" data-kind="${kind}">➕ ${info.newLabel}</button>`;
+}
+
+function openItemEditor(kind, id) {
+  const info = KIND_INFO[kind]; if (!info) return;
+  const isNew = !id;
+  const it = isNew ? { emoji: info.def, title: '', points: 10, cost: 30, duration: 0 } : state[kind][id];
+  if (!it) return;
+  let emoji = it.emoji || info.def, delArmed = false;
+  const num = kind === 'rewards' ? int(it.cost) : int(it.points);
+  const el = $('#modal');
+  el.innerHTML = `<div class="modal-card ie">
+    <h3>${isNew ? '➕ ' + info.newLabel : '✏️ Modifier'}</h3>
+    <div class="ie-preview"><span id="ieEmoji">${esc(emoji)}</span></div>
+    <label class="lbl">Choisissez une icône</label>
+    <div class="emoji-pick">${EMOJI_GROUPS.map(([g, l]) => `<div class="eg-title">${g}</div><div class="emoji-grid">${l.split(' ').map(e => `<button type="button" data-emoji="${e}" class="${e === emoji ? 'sel' : ''}">${e}</button>`).join('')}</div>`).join('')}</div>
+    <input class="input" id="ieCustom" maxlength="8" placeholder="… ou tapez un autre émoji 😀">
+    <label class="lbl" for="ieTitle">Nom</label>
+    <input class="input" id="ieTitle" maxlength="80" value="${esc(it.title || '')}" placeholder="${esc(info.placeholder)}">
+    <label class="lbl" for="ieNum">${info.numLabel}</label>
+    <div class="ie-num"><button type="button" data-step="-5">−5</button><button type="button" data-step="-1">−1</button>
+      <input class="input" id="ieNum" type="number" inputmode="numeric" min="0" max="10000" value="${num}">
+      <button type="button" data-step="1">+1</button><button type="button" data-step="5">+5</button></div>
+    ${kind === 'rewards' ? `<label class="lbl" for="ieDur">Chrono tablette</label><select class="input" id="ieDur">${DURATIONS.map(d => `<option value="${d}" ${int(it.duration) === d ? 'selected' : ''}>${d ? '⏱️ ' + d + ' min' : 'Sans chrono'}</option>`).join('')}</select>` : ''}
+    <div class="m-actions"><button class="btn btn-grey btn-lg" data-ie="cancel">Annuler</button><button class="btn btn-green btn-lg" data-ie="save">${isNew ? '➕ Ajouter' : '💾 Enregistrer'}</button></div>
+    ${isNew ? '' : '<button class="btn btn-ghost btn-block" style="margin-top:10px;color:var(--red-d)" data-ie="delete">🗑️ Supprimer</button>'}
+  </div>`;
+  el.classList.remove('hidden');
+  const close = () => { el.classList.add('hidden'); el.onclick = null; el.oninput = null; el.innerHTML = ''; };
+  const setEmoji = e => { emoji = e; $('#ieEmoji').textContent = e; $$('.emoji-grid button', el).forEach(b => b.classList.toggle('sel', b.dataset.emoji === e)); };
+  el.oninput = e => { if (e.target.id === 'ieCustom') { const v = e.target.value.trim(); if (v) setEmoji(v); } };
+  el.onclick = e => {
+    if (e.target === el) { close(); return; }
+    const em = e.target.closest('[data-emoji]');
+    if (em) { setEmoji(em.dataset.emoji); sound('click'); return; }
+    const st = e.target.closest('[data-step]');
+    if (st) { const inp = $('#ieNum'); inp.value = Math.min(10000, Math.max(0, int(inp.value) + int(st.dataset.step))); sound('click'); return; }
+    const b = e.target.closest('[data-ie]'); if (!b) return;
+    if (b.dataset.ie === 'cancel') { close(); return; }
+    if (b.dataset.ie === 'delete') {
+      if (!delArmed) { delArmed = true; b.textContent = '⚠️ Touchez encore pour confirmer la suppression'; b.classList.add('btn-red'); b.style.color = '#fff'; return; }
+      write({ [`${kind}/${id}`]: null });
+      close(); sound('pop'); toast('🗑️ Supprimé'); render(true);
+      return;
+    }
+    const title = $('#ieTitle').value.trim();
+    const n = int($('#ieNum').value, -1);
+    if (!title) { sound('error'); toast('Donnez un nom', 'error'); $('#ieTitle').focus(); return; }
+    if (n < 0 || n > 10000) { sound('error'); toast('Nombre de points invalide', 'error'); return; }
+    const key = isNew ? uid(kind.charAt(0)) : id;
+    const order = isNew ? Math.max(0, ...list(state[kind]).map(i => int(i.order))) + 1 : int(it.order);
+    const item = { emoji, title, order };
+    if (kind === 'rewards') { item.cost = n; item.duration = int($('#ieDur').value); } else item.points = n;
+    write({ [`${kind}/${key}`]: item });
+    close(); sound('success'); toast(isNew ? `➕ ${emoji} ${title} ajouté` : '💾 Enregistré', 'success'); render(true);
   };
-  return items.map(it => row(it.id, it, false)).join('') + row('new', { emoji: '', title: '', duration: 0 }, true);
 }
 
 function backupListHtml() {
@@ -1552,9 +1634,9 @@ function parentSettings() {
       <div style="margin-top:12px"><button class="btn btn-blue btn-sm" data-act="saveGeneral">💾 Enregistrer</button></div>
     </section>
     <section class="card"><h2>🧒 Enfants</h2>${kids}</section>
-    <section class="card"><h2>🎯 Missions</h2><p class="note">Émoji · titre · points gagnés</p>${editorHtml('missions')}</section>
-    <section class="card"><h2>🛍️ Récompenses</h2><p class="note">Émoji · titre · prix en ⭐ · chrono éventuel</p>${editorHtml('rewards')}</section>
-    <section class="card"><h2>🔴 Malus</h2><p class="note">Émoji · motif · points retirés</p>${editorHtml('maluses')}</section>
+    <section class="card"><h2>🎯 Missions</h2>${editorHtml('missions')}</section>
+    <section class="card"><h2>🛍️ Récompenses</h2>${editorHtml('rewards')}</section>
+    <section class="card"><h2>🔴 Malus</h2>${editorHtml('maluses')}</section>
     <section class="card">
       <h2>🛟 Sauvegardes dans le cloud</h2>
       <p class="note">Toutes les données (points, tickets, journal, réglages, code PIN) sont gardées dans votre base Firebase, pas dans le navigateur. Effacer l'historique ou changer de téléphone ne perd rien : rouvrez le lien et tout revient.</p>
@@ -1734,30 +1816,8 @@ const ACTIONS = {
     write({ [`profiles/${d.id}/name`]: name, [`profiles/${d.id}/avatar`]: avatar, [`profiles/${d.id}/color`]: COLORS[color] ? color : 'blue' });
     sound('success'); toast(`💾 Profil de ${name} enregistré`, 'success'); render(true);
   },
-  saveItem(d) {
-    const pre = `ed-${d.kind}-${d.id}`;
-    const emoji = $(`#${pre}-emoji`).value.trim() || '⭐';
-    const title = $(`#${pre}-title`).value.trim();
-    const num = int($(`#${pre}-num`).value, -1);
-    if (!title) { sound('error'); toast('Le titre est obligatoire', 'error'); return; }
-    if (num < 0 || num > 10000) { sound('error'); toast('Nombre de points invalide', 'error'); return; }
-    const isNew = d.id === 'new';
-    const id = isNew ? uid(d.kind.charAt(0)) : d.id;
-    const old = state[d.kind][id] || {};
-    const order = isNew ? Math.max(0, ...list(state[d.kind]).map(i => int(i.order))) + 1 : int(old.order);
-    const item = { emoji, title, order };
-    if (d.kind === 'rewards') { item.cost = num; item.duration = int($(`#${pre}-dur`).value); }
-    else item.points = num;
-    write({ [`${d.kind}/${id}`]: item });
-    sound('success'); toast(isNew ? '➕ Ajouté' : '💾 Enregistré', 'success'); render(true);
-  },
-  async deleteItem(d) {
-    const it = state[d.kind][d.id]; if (!it) return;
-    const ok = await modal({ emoji: '🗑️', title: 'Supprimer ?', text: `${it.emoji} ${it.title}`, yesLabel: '🗑️ Supprimer', yesClass: 'btn-red' });
-    if (!ok) return;
-    write({ [`${d.kind}/${d.id}`]: null });
-    sound('pop'); toast('🗑️ Supprimé'); render(true);
-  },
+  addItem(d) { sound('click'); openItemEditor(d.kind, null); },
+  editItem(d) { sound('click'); openItemEditor(d.kind, d.id); },
   exportData() {
     const data = Object.assign({ exportedAt: new Date().toISOString(), app: 'mini-heros' }, clone(state));
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
