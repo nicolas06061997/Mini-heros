@@ -70,7 +70,25 @@ body{-webkit-touch-callout:none;touch-action:manipulation}
 .badge{position:absolute;top:-7px;right:-7px;min-width:24px;height:24px;padding:0 6px;border-radius:999px;background:var(--red);color:#fff;
   font-size:.85rem;font-weight:800;display:flex;align-items:center;justify-content:center;border:2px solid #fff;animation:pulse 1.6s infinite;line-height:1}
 .dark-bar .icon-btn{background:rgba(255,255,255,.2);color:#fff}
-@media (max-width:560px){ .parent-btn .plbl{display:none} .brand{font-size:1.25rem} }
+.plbl-s{display:none}
+@media (max-width:560px){ .parent-btn .plbl{display:none} .parent-btn .plbl-s{display:inline} .brand{font-size:1.25rem} }
+@media (max-width:370px){ .parent-btn .plbl-s{display:none} }
+/* ---------- Vue d'ensemble enfants (Mode Parent) ---------- */
+.overview{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.ov-card{position:relative;overflow:hidden;text-align:left;color:#fff;border-radius:24px;padding:14px 14px 12px;background:linear-gradient(160deg,var(--tc1),var(--tc2));
+  box-shadow:0 6px 0 var(--tcd),0 12px 24px rgba(0,0,0,.12);display:flex;flex-direction:column;gap:4px;min-width:0;transition:transform .12s,box-shadow .12s}
+.ov-card:active{transform:translateY(4px);box-shadow:0 2px 0 var(--tcd)}
+.ov-card::after{content:'';position:absolute;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.13);top:-60px;right:-50px}
+.ov-top{display:flex;align-items:center;gap:8px;min-width:0;position:relative;z-index:1}
+.ov-avatar{font-size:2.6rem;line-height:1;flex:none;filter:drop-shadow(0 3px 4px rgba(0,0,0,.2))}
+.ov-name{font-size:1.25rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-points{font-size:2.7rem;font-weight:800;line-height:1;text-shadow:0 2px 0 rgba(0,0,0,.15);position:relative;z-index:1}
+.ov-chips{display:flex;flex-wrap:wrap;gap:4px;min-height:4px;position:relative;z-index:1}
+.ov-chips .chip{font-size:.78rem;padding:2px 8px}
+.ov-card .progress-wrap{margin-top:4px;max-width:none}
+.ov-card .progress-label{font-size:.85rem}
+.ov-card .progress{height:10px}
+@media (min-width:700px){ .ov-points{font-size:3.2rem} .ov-avatar{font-size:3.2rem} }
 @media (max-width:420px){ .sync-pill .txt{display:none} }
 
 /* ---------- Accueil ---------- */
@@ -783,7 +801,7 @@ const confetti = (() => {
 })();
 
 function flashRed() { const f = $('#flash'); f.classList.remove('on'); void f.offsetWidth; f.classList.add('on'); }
-function bumpPoints() { setTimeout(() => $$('.ch-points,.cc-points').forEach(el => { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }), 60); }
+function bumpPoints() { setTimeout(() => $$('.ch-points,.cc-points,.ov-points').forEach(el => { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }), 60); }
 function shakeEl(el) { if (!el) return; el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); }
 
 /* =====================================================================
@@ -1167,7 +1185,7 @@ function topBar() {
   return `<header class="topbar">
     <div class="brand"><span class="brand-star">⭐</span><span class="brand-name">${esc(state.settings.appName)}</span></div>
     <div class="top-actions">${syncPillHtml()}${canOfferInstall() ? '<button class="icon-btn" data-act="installApp" aria-label="Installer">📲</button>' : ''}${soundBtn()}
-      <button class="parent-btn" data-act="openParent" aria-label="Mode Parent">${isParentDevice() ? '📱' : '🔒'}<span class="plbl">Mode Parent</span>${pendingBadge()}</button>
+      <button class="parent-btn" data-act="openParent" aria-label="Mode Parent">${isParentDevice() ? '📱' : '🔒'}<span class="plbl">Mode Parent</span><span class="plbl-s">Parent</span>${pendingBadge()}</button>
     </div></header>`;
 }
 
@@ -1342,6 +1360,25 @@ function childPicker(key) {
 }
 const bound = k => esc(view.form[k] == null ? '' : view.form[k]);
 
+function kidsOverviewHtml() {
+  return `<div class="overview">${KIDS.map(cid => {
+    const p = state.profiles[cid], s = state.scores[cid];
+    const pend = requestsOf(cid).length, timer = runningTimerOf(cid);
+    const nt = list(state.tickets).filter(t => t.childId === cid && t.status !== 'used').length;
+    return `<button class="ov-card theme-${esc(p.color)}" data-act="openChild" data-id="${cid}">
+      <div class="ov-top"><span class="ov-avatar">${esc(p.avatar)}</span><span class="ov-name">${esc(p.name)}</span></div>
+      <div class="ov-points">${s.points} ⭐</div>
+      <div class="ov-chips">
+        ${s.yellow ? '<span class="chip chip-yellow">🟨 Carton</span>' : ''}
+        ${pend ? `<span class="chip chip-wait">⏳ ${pend}</span>` : ''}
+        ${timer ? `<span class="chip chip-timer">${timer.timer.status === 'paused' ? '⏸️' : '⏱️'} <span data-timer="${esc(timer.id)}">--:--</span></span>` : ''}
+        ${nt ? `<span class="chip">🎟️ ${nt}</span>` : ''}
+      </div>
+      ${progressHtml(s.points)}
+    </button>`;
+  }).join('')}</div>`;
+}
+
 function parentValidations() {
   const reqs = list(state.requests).sort((a, b) => int(a.ts) - int(b.ts));
   const n = reqs.length;
@@ -1354,7 +1391,7 @@ function parentValidations() {
       <button class="btn-round red" data-act="refuseReq" data-id="${esc(r.id)}" aria-label="Refuser">❌</button></div></div>`;
   }).join('') : `<div class="empty"><span class="big">🎉</span>Aucune demande en attente</div>`;
   const ms = list(state.missions);
-  return `<section class="card">
+  return `${kidsOverviewHtml()}<section class="card">
       <div class="card-head"><h2>⏳ Missions à valider <span class="count ${n ? '' : 'zero'}">${n}</span></h2>
       ${n > 1 ? '<button class="btn btn-green btn-sm" data-act="validateAll">✅ Tout valider</button>' : ''}</div>
       ${reqHtml}
@@ -1542,8 +1579,11 @@ function parentSettings() {
 function goTop() { window.scrollTo(0, 0); }
 
 const ACTIONS = {
-  goHome() { applyUpdateIfReady(); view.name = 'home'; view.pin = ''; view.pinState = ''; view.form = {}; sound('click'); render(true); goTop(); },
-  openChild(d) { view.name = 'child'; view.childId = d.id; view.childTab = 'missions'; sound('click'); render(true); goTop(); },
+  goHome() {
+    applyUpdateIfReady();
+    if (view.name === 'child' && view.returnTo === 'parent') { view.returnTo = null; view.name = 'parent'; sound('click'); render(true); goTop(); return; }
+    view.returnTo = null; view.name = 'home'; view.pin = ''; view.pinState = ''; view.form = {}; sound('click'); render(true); goTop(); },
+  openChild(d) { view.returnTo = view.name === 'parent' ? 'parent' : null; view.name = 'child'; view.childId = d.id; view.childTab = 'missions'; sound('click'); render(true); goTop(); },
   childTab(d) { view.childTab = d.tab; sound('click'); render(true); goTop(); },
   toggleMission(d) { toggleMission(d.id); },
   buyReward(d, el) { buyReward(d.id, el); },

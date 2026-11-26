@@ -2,7 +2,7 @@
    - Rend l'application installable (Android / Chrome / Edge).
    - Permet de l'ouvrir même sans réseau (dernière version en cache).
    - Ne touche jamais aux échanges temps réel avec Firebase. */
-const VERSION = 'mini-heros-v3';
+const VERSION = 'mini-heros-v4';
 const CORE = [
   './',
   './index.html',
