@@ -529,7 +529,7 @@ const who = () => device.role === 'papa' ? 'Papa' : device.role === 'maman' ? 'M
    STOCKAGE + SYNCHRONISATION
    ===================================================================== */
 let state = normalize(LS.get('mh_data', null) || defaultData());
-const sync = { enabled: false, ready: false, connected: false, loading: false, db: null, root: null, errorShown: false };
+const sync = { enabled: false, ready: false, connected: false, loading: false, seeding: false, db: null, root: null, backups: null, errorShown: false };
 
 function persist() { LS.set('mh_data', state); }
 function getPath(obj, path) { return path.split('/').reduce((o, k) => (o == null ? undefined : o[k]), obj); }
@@ -571,7 +571,9 @@ function txn(path, fn) {
 }
 
 function replaceAll(data) {
+  const keep = { backups: (state.meta && state.meta.backups) || {}, lastBackupDay: (state.meta && state.meta.lastBackupDay) || '' };
   state = normalize(data);
+  state.meta = Object.assign({}, state.meta, keep);
   persist();
   if (sync.ready && sync.root) sync.root.set(clone(state)).catch(fbError);
   onStateChanged();
@@ -601,16 +603,24 @@ async function initFirebase() {
     }
     const app = firebase.apps.length ? firebase.app() : firebase.initializeApp(cfg);
     sync.db = firebase.database(app);
-    sync.root = sync.db.ref(FAMILY_KEY);
-    sync.db.ref('.info/connected').on('value', s => { sync.connected = !!s.val(); updateSyncPill(); });
+    // Données de l'appli : FAMILY_KEY/data · Sauvegardes quotidiennes : FAMILY_KEY/backups
+    sync.root = sync.db.ref(FAMILY_KEY + '/data');
+    sync.backups = sync.db.ref(FAMILY_KEY + '/backups');
+    sync.db.ref('.info/connected').on('value', s => { sync.connected = !!s.val(); updateSyncPill(); if (sync.connected) setTimeout(maybeDailyBackup, 4000); });
     sync.db.ref('.info/serverTimeOffset').on('value', s => { serverOffset = Number(s.val()) || 0; });
     sync.root.on('value', snap => {
       const val = snap.val();
       if (!val || !val.settings) {
-        // Base encore vide : on y dépose les données de cet appareil.
-        sync.ready = true;
-        sync.root.set(clone(state)).catch(fbError);
-        updateSyncPill();
+        // Base vide : on reprend d'éventuelles données d'une ancienne version, sinon celles de cet appareil.
+        if (sync.seeding) return;
+        sync.seeding = true;
+        sync.db.ref(FAMILY_KEY).once('value').then(ls => {
+          const legacy = ls.val();
+          let base = clone(state);
+          if (legacy && legacy.settings) { base = clone(legacy); delete base.data; delete base.backups; }
+          sync.ready = true;
+          return sync.root.set(clone(normalize(base)));
+        }).catch(fbError).then(() => { sync.seeding = false; updateSyncPill(); });
         return;
       }
       sync.ready = true;
@@ -618,6 +628,7 @@ async function initFirebase() {
       persist();
       onStateChanged();
       updateSyncPill();
+      setTimeout(maybeDailyBackup, 4000);
     }, err => {
       console.warn(err);
       sync.ready = false;
@@ -633,6 +644,45 @@ async function initFirebase() {
   }
 }
 window.addEventListener('online', () => { if (!sync.db) initFirebase(); });
+
+/* =====================================================================
+   SAUVEGARDES CLOUD (1 par jour, 40 conservées) + avant chaque opération risquée
+   ===================================================================== */
+const MAX_BACKUPS = 40;
+let backupRunning = false;
+const cloudOk = () => !!(sync.ready && sync.connected && sync.backups);
+const dayKey = () => new Date(now()).toISOString().slice(0, 10);
+function stampKey(suffix) {
+  const d = new Date(now()), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-${suffix}`;
+}
+async function createBackup(key, label) {
+  if (!cloudOk()) return false;
+  try {
+    const data = clone(state);
+    if (data.meta) { delete data.meta.backups; delete data.meta.lastBackupDay; }
+    const ts = now();
+    await sync.backups.child(key).set({ ts, label, data });
+    const idx = Object.assign({}, state.meta.backups || {}, { [key]: { ts, label } });
+    const keys = Object.keys(idx).sort((a, b) => int(idx[a].ts) - int(idx[b].ts));
+    const updates = { ['meta/backups/' + key]: { ts, label } };
+    for (let i = 0; i < keys.length - MAX_BACKUPS; i++) {
+      updates['meta/backups/' + keys[i]] = null;
+      sync.backups.child(keys[i]).remove().catch(() => {});
+    }
+    write(updates);
+    return true;
+  } catch (e) { console.warn('Sauvegarde impossible', e); return false; }
+}
+function maybeDailyBackup() {
+  if (!cloudOk() || backupRunning) return;
+  const d = dayKey();
+  if (state.meta.lastBackupDay === d) return;
+  backupRunning = true;
+  write({ 'meta/lastBackupDay': d });
+  createBackup(d, 'Sauvegarde automatique').finally(() => { backupRunning = false; });
+}
+setInterval(maybeDailyBackup, 3600 * 1000);
 
 function syncStatus() {
   if (sync.ready && sync.connected) return { cls: 'on', dot: '🟢', txt: 'Synchronisé', title: 'Connecté : tous les appareils sont à jour en direct' };
@@ -1413,6 +1463,16 @@ function editorHtml(kind) {
   return items.map(it => row(it.id, it, false)).join('') + row('new', { emoji: '', title: '', duration: 0 }, true);
 }
 
+function backupListHtml() {
+  if (!sync.enabled) return '<p class="note">⚠️ Disponible une fois Firebase configuré.</p>';
+  if (!cloudOk()) return '<p class="note">🟠 Connexion requise pour voir et restaurer les sauvegardes.</p>';
+  const items = Object.entries(state.meta.backups || {}).map(([id, v]) => Object.assign({ id }, v)).sort((a, b) => int(b.ts) - int(a.ts)).slice(0, 15);
+  if (!items.length) return '<p class="note">La première sauvegarde automatique arrive dans quelques secondes.</p>';
+  return items.map(b => `<div class="tk-row"><div class="rr-avatar">${b.label === 'Sauvegarde automatique' ? '🗓️' : '🛟'}</div>
+    <div class="rr-body"><div class="rr-title">${esc(fmtDate(b.ts))}</div><div class="rr-meta">${esc(b.label || '')}</div></div>
+    <button class="btn btn-ghost btn-sm" data-act="restoreBackup" data-id="${esc(b.id)}">♻️ Restaurer</button></div>`).join('');
+}
+
 function parentSettings() {
   const roleBtn = (role, icon, label) => `<button class="role-btn ${device.role === role ? 'sel' : ''}" data-act="setRole" data-role="${role}"><span>${icon}</span>${label}</button>`;
   const kids = KIDS.map(cid => {
@@ -1459,7 +1519,15 @@ function parentSettings() {
     <section class="card"><h2>🛍️ Récompenses</h2><p class="note">Émoji · titre · prix en ⭐ · chrono éventuel</p>${editorHtml('rewards')}</section>
     <section class="card"><h2>🔴 Malus</h2><p class="note">Émoji · motif · points retirés</p>${editorHtml('maluses')}</section>
     <section class="card">
-      <h2>💾 Sauvegarde</h2>
+      <h2>🛟 Sauvegardes dans le cloud</h2>
+      <p class="note">Toutes les données (points, tickets, journal, réglages, code PIN) sont gardées dans votre base Firebase, pas dans le navigateur. Effacer l'historique ou changer de téléphone ne perd rien : rouvrez le lien et tout revient.</p>
+      <p class="note">En plus, une sauvegarde est faite automatiquement chaque jour, et avant chaque import, restauration ou réinitialisation (${MAX_BACKUPS} conservées).</p>
+      ${backupListHtml()}
+      <button class="btn btn-blue btn-block" style="margin-top:10px;${cloudOk() ? '' : 'opacity:.5'}" data-act="backupNow">🛟 Sauvegarder maintenant</button>
+    </section>
+    <section class="card">
+      <h2>💾 Fichier de sauvegarde</h2>
+      <p class="note">Une copie sur l'appareil, en plus du cloud (à garder dans vos fichiers ou à vous envoyer par e-mail).</p>
       <div class="btn-row">
         <button class="btn btn-blue" data-act="exportData">⬇️ Exporter (JSON)</button>
         <button class="btn btn-ghost" data-act="importData">⬆️ Importer</button>
@@ -1666,9 +1734,31 @@ const ACTIONS = {
     if (!ok1) return;
     const ok2 = await modal({ emoji: '🗑️', title: 'Vraiment sûr ?', text: 'Cette action est définitive. Pensez à exporter une sauvegarde avant.', yesLabel: '🗑️ Tout effacer', yesClass: 'btn-red' });
     if (!ok2) return;
+    await createBackup(stampKey('avant-reinitialisation'), 'Avant réinitialisation');
     replaceAll(defaultData());
     toast('🗑️ Application réinitialisée', 'info');
   }
+};
+
+ACTIONS.backupNow = async () => {
+  if (!cloudOk()) { sound('error'); toast('Connexion requise pour sauvegarder', 'error'); return; }
+  const ok = await createBackup(stampKey('manuelle'), 'Sauvegarde manuelle');
+  if (ok) { sound('success'); toast('🛟 Sauvegarde enregistrée dans le cloud', 'success'); } else { sound('error'); toast('Sauvegarde impossible', 'error'); }
+  render(true);
+};
+ACTIONS.restoreBackup = async d => {
+  const meta = (state.meta.backups || {})[d.id];
+  if (!meta || !cloudOk()) { sound('error'); toast('Connexion requise pour restaurer', 'error'); return; }
+  const ok = await modal({ emoji: '♻️', title: 'Restaurer cette sauvegarde ?', text: `${fmtDate(meta.ts)} — les données actuelles seront remplacées sur tous les appareils (une copie de sécurité est faite avant).`, yesLabel: '♻️ Restaurer', yesClass: 'btn-blue' });
+  if (!ok) return;
+  try {
+    const snap = await sync.backups.child(d.id).once('value');
+    const v = snap.val();
+    if (!v || !v.data || !v.data.settings) throw new Error('vide');
+    await createBackup(stampKey('avant-restauration'), 'Avant restauration');
+    replaceAll(v.data);
+    confetti.burst(120); sound('victory'); toast('♻️ Données restaurées', 'success');
+  } catch (e) { sound('error'); toast('Restauration impossible', 'error'); }
 };
 
 async function applyMalusGeneric(cid, amount, emoji, label) {
@@ -1702,6 +1792,7 @@ $('#importFile').addEventListener('change', async e => {
     delete data.exportedAt; delete data.app;
     const ok = await modal({ emoji: '⬆️', title: 'Importer cette sauvegarde ?', text: 'Les données actuelles seront remplacées sur tous les appareils.', yesLabel: '⬆️ Importer', yesClass: 'btn-blue' });
     if (!ok) return;
+    await createBackup(stampKey('avant-import'), 'Avant import');
     replaceAll(data);
     toast('⬆️ Sauvegarde importée', 'success');
   } catch (err) {
