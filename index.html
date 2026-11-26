@@ -149,8 +149,8 @@ body{-webkit-touch-callout:none;touch-action:manipulation}
 .tab.active.t-blue{background:var(--blue);box-shadow:0 5px 0 var(--blue-d)}
 .tab.active.t-red{background:var(--red);box-shadow:0 5px 0 var(--red-d)}
 .tab.active.t-dark{background:var(--ink);box-shadow:0 5px 0 #000}
-.parent-tabs{grid-template-columns:repeat(4,1fr);gap:8px}
-.parent-tabs .tab{height:64px;font-size:.82rem;border-radius:18px}
+.parent-tabs{grid-template-columns:repeat(5,1fr);gap:6px;padding-left:8px;padding-right:8px}
+.parent-tabs .tab{height:64px;font-size:.74rem;border-radius:16px}
 .parent-tabs .tab .ti{font-size:1.6rem}
 .tab .badge{top:4px;right:8px}
 @media (min-width:900px){ .tabs{padding-left:calc(50% - 540px);padding-right:calc(50% - 540px)} }
@@ -261,6 +261,15 @@ body{-webkit-touch-callout:none;touch-action:manipulation}
 .mini-card .me{font-size:1.9rem;line-height:1.1}
 .mini-card b{font-size:1.05rem}
 .mini-card.green{background:#dcfce7;color:#14532d;box-shadow:0 3px 0 #86efac}
+.edit-toggle{flex:none}
+.editing .mini-card:not(.add){outline:3px dashed var(--purple);outline-offset:-3px}
+.editing .mini-card:not(.add)::after{content:'✏️';position:absolute;top:6px;right:8px;font-size:1rem}
+.mini-card{position:relative}
+.edit-hint{background:#f5f3ff;color:var(--purple);font-weight:800;border-radius:12px;padding:8px 12px;margin-bottom:10px;font-size:.92rem}
+.shop-who{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;font-size:.8rem;font-weight:800}
+.shop-who span{background:rgba(255,255,255,.7);border-radius:999px;padding:1px 8px}
+.reward-card.parent{animation:none;min-height:190px}
+.reward-card.add{background:#f5f3ff;color:var(--purple);border:3px dashed #c4b5fd;box-shadow:none}
 .mini-card.add{background:#f5f3ff;color:var(--purple);border:3px dashed #c4b5fd;box-shadow:none}
 .mini-card.add .me{font-size:2rem}
 .mini-card.gold{background:#fef3c7;color:#78350f;box-shadow:0 3px 0 #fcd34d}
@@ -1135,7 +1144,7 @@ function updateTimerOverlay() {
 const view = {
   name: isParentDevice() ? 'parent' : 'home',
   childId: null, childTab: 'missions', parentTab: 'valid',
-  creditChild: 'c1', bonusChild: 'c1', malusChild: 'c1',
+  creditChild: 'c1', bonusChild: 'c1', malusChild: 'c1', fixChild: 'c1', editMissions: false, editMaluses: false,
   pin: '', pinState: '', form: {}
 };
 let renderQueued = false, pendingRender = false;
@@ -1350,6 +1359,7 @@ function viewParent() {
   let body = '';
   if (view.parentTab === 'malus') body = parentMalus();
   else if (view.parentTab === 'tickets') body = parentTickets();
+  else if (view.parentTab === 'shop') body = parentShop();
   else if (view.parentTab === 'settings') body = parentSettings();
   else body = parentValidations();
   const tab = (key, ti, label, cls, badge) => `<button class="tab ${cls} ${view.parentTab === key ? 'active' : ''}" data-act="parentTab" data-tab="${key}"><span class="ti">${ti}</span>${label}${badge || ''}</button>`;
@@ -1361,8 +1371,9 @@ function viewParent() {
     </header>
     <main class="content">${body}</main>
     <nav class="tabs parent-tabs">
-      ${tab('valid', '✅', 'Validations', 't-green', pendingBadge())}
+      ${tab('valid', '✅', 'Valider', 't-green', pendingBadge())}
       ${tab('malus', '🟥', 'Malus', 't-red')}
+      ${tab('shop', '🛍️', 'Boutique', 't-gold')}
       ${tab('tickets', '🎟️', 'Tickets', 't-blue', '<span class="badge" data-badge="tickets" style="display:none;background:var(--blue)">0</span>')}
       ${tab('settings', '⚙️', 'Réglages', 't-dark')}
     </nav>`;
@@ -1413,12 +1424,12 @@ function parentValidations() {
       ${n > 1 ? '<button class="btn btn-green btn-sm" data-act="validateAll">✅ Tout valider</button>' : ''}</div>
       ${reqHtml}
     </section>
-    <section class="card">
-      <h2>⚡ Créditer directement une mission</h2>
-      ${childPicker('creditChild')}
-      <div class="chip-grid">${ms.map(m => `<button class="mini-card green" data-act="creditMission" data-id="${esc(m.id)}"><span class="me">${esc(m.emoji)}</span><span>${esc(m.title)}</span><b>+${int(m.points)} ⭐</b></button>`).join('')}
+    <section class="card ${view.editMissions ? 'editing' : ''}">
+      <div class="card-head"><h2>${view.editMissions ? '✏️ Modifier les missions' : '⚡ Créditer une mission'}</h2>
+        <button class="btn btn-sm edit-toggle ${view.editMissions ? 'btn-green' : 'btn-ghost'}" data-act="toggleEdit" data-key="editMissions">${view.editMissions ? '✅ Terminé' : '✏️ Modifier'}</button></div>
+      ${view.editMissions ? '<div class="edit-hint">Touchez une mission pour changer son icône, son nom ou ses points, ou pour la supprimer.</div>' : childPicker('creditChild')}
+      <div class="chip-grid">${ms.map(m => `<button class="mini-card green" data-act="${view.editMissions ? 'editItem' : 'creditMission'}" data-kind="missions" data-id="${esc(m.id)}"><span class="me">${esc(m.emoji)}</span><span>${esc(m.title)}</span><b>+${int(m.points)} ⭐</b></button>`).join('')}
         <button class="mini-card add" data-act="addItem" data-kind="missions"><span class="me">➕</span><span>Nouvelle mission</span></button></div>
-      <p class="note">✏️ Pour modifier ou supprimer une mission : ⚙️ Réglages.</p>
     </section>
     <section class="card">
       <h2>🎁 Points bonus personnalisés</h2>
@@ -1429,6 +1440,15 @@ function parentValidations() {
         <input class="input" type="text" maxlength="80" placeholder="Motif (ex : très gentil avec sa sœur)" data-bind="bonusReason" value="${bound('bonusReason')}">
       </div>
       <button class="btn btn-green btn-block btn-lg" data-act="giveBonus">➕ Donner le bonus</button>
+    </section>
+    <section class="card">
+      <h2>🧮 Corriger le total d'étoiles</h2>
+      ${childPicker('fixChild')}
+      <p class="note">Total actuel de ${esc(state.profiles[view.fixChild].name)} : <b>${state.scores[view.fixChild].points} ⭐</b>. Indiquez le nouveau total exact.</p>
+      <div class="form-row">
+        <input class="input" type="number" inputmode="numeric" min="0" max="100000" placeholder="Nouveau total" data-bind="fixTotal" value="${bound('fixTotal')}">
+        <button class="btn btn-blue" data-act="setTotal">✔️ Appliquer</button>
+      </div>
     </section>`;
 }
 
@@ -1444,9 +1464,11 @@ function parentMalus() {
       <button class="btn btn-yellow btn-block btn-lg" data-act="giveYellow">🟨 Donner un avertissement</button>
       ${s.yellow ? '<button class="btn btn-ghost btn-block" style="margin-top:10px" data-act="removeYellow">🧽 Retirer le carton jaune</button>' : ''}
     </section>
-    <section class="card red-zone">
-      <h2>🔴 Malus directs</h2>
-      <div class="chip-grid">${xs.map(x => `<button class="mini-card red" data-act="applyMalus" data-id="${esc(x.id)}"><span class="me">${esc(x.emoji)}</span><span>${esc(x.title)}</span><b>-${int(x.points)} ⭐</b></button>`).join('')}
+    <section class="card red-zone ${view.editMaluses ? 'editing' : ''}">
+      <div class="card-head"><h2>${view.editMaluses ? '✏️ Modifier les malus' : '🔴 Malus directs'}</h2>
+        <button class="btn btn-sm edit-toggle ${view.editMaluses ? 'btn-green' : 'btn-ghost'}" data-act="toggleEdit" data-key="editMaluses">${view.editMaluses ? '✅ Terminé' : '✏️ Modifier'}</button></div>
+      ${view.editMaluses ? '<div class="edit-hint">Touchez un malus pour changer son icône, son motif ou ses points, ou pour le supprimer.</div>' : ''}
+      <div class="chip-grid">${xs.map(x => `<button class="mini-card red" data-act="${view.editMaluses ? 'editItem' : 'applyMalus'}" data-kind="maluses" data-id="${esc(x.id)}"><span class="me">${esc(x.emoji)}</span><span>${esc(x.title)}</span><b>-${int(x.points)} ⭐</b></button>`).join('')}
         <button class="mini-card add" data-act="addItem" data-kind="maluses"><span class="me">➕</span><span>Nouveau malus</span></button></div>
       <p class="note">Plancher strict : le score ne descend jamais sous 0 ⭐.</p>
     </section>
@@ -1458,6 +1480,26 @@ function parentMalus() {
       </div>
       <button class="btn btn-red btn-block btn-lg" data-act="customMalus">➖ Retirer les points</button>
     </section>`;
+}
+
+function parentShop() {
+  const rewards = list(state.rewards);
+  const who = r => KIDS.map(cid => {
+    const p = state.profiles[cid], pts = state.scores[cid].points, cost = int(r.cost);
+    return `<span>${esc(p.avatar)} ${pts >= cost ? '✅' : 'encore ' + (cost - pts)}</span>`;
+  }).join('');
+  return `<div class="section-title gold">🛍️ Boutique des enfants</div>
+    <p class="note" style="margin:-6px 4px 14px">C'est ce que voient ${esc(state.profiles.c1.name)} et ${esc(state.profiles.c2.name)}. Touchez une récompense pour changer son icône, son nom, son prix ou son chrono, ou pour la retirer.</p>
+    <div class="grid">${rewards.map(r => `<button class="reward-card ok parent" data-act="editItem" data-kind="rewards" data-id="${esc(r.id)}">
+        ${int(r.duration) > 0 ? `<span class="rc-dur">⏱️ ${int(r.duration)} min</span>` : ''}
+        <div class="rc-emoji">${esc(r.emoji)}</div>
+        <div class="rc-title">${esc(r.title)}</div>
+        <div class="rc-cost">${int(r.cost)} ⭐</div>
+        <div class="shop-who">${who(r)}</div>
+        <div class="rc-go">✏️ Modifier</div>
+      </button>`).join('')}
+      <button class="reward-card add" data-act="addItem" data-kind="rewards"><div class="rc-emoji">➕</div><div class="rc-title">Ajouter une récompense</div></button>
+    </div>`;
 }
 
 function parentTickets() {
@@ -1497,11 +1539,6 @@ function parentTickets() {
   return `<section class="card"><h2>⏱️ Chronos tablette en cours</h2>${timersHtml}</section>
     <section class="card"><h2>🎟️ Tickets à donner</h2>${openHtml}</section>
     <section class="card"><h2>📦 Derniers tickets donnés</h2>${doneHtml}</section>
-    <section class="card"><h2>🛍️ Récompenses de la boutique</h2>
-      <p class="note">Touchez une récompense pour la modifier.</p>
-      <div class="chip-grid">${list(state.rewards).map(r => `<button class="mini-card gold" data-act="editItem" data-kind="rewards" data-id="${esc(r.id)}"><span class="me">${esc(r.emoji)}</span><span>${esc(r.title)}</span><b>${int(r.cost)} ⭐${int(r.duration) ? ' · ⏱️ ' + int(r.duration) + ' min' : ''}</b></button>`).join('')}
-        <button class="mini-card add" data-act="addItem" data-kind="rewards"><span class="me">➕</span><span>Nouvelle récompense</span></button></div>
-    </section>
     <section class="card"><h2>📜 Journal de la famille</h2>${logRowsHtml(list(state.log).sort((a, b) => int(b.ts) - int(a.ts)).slice(0, 40), true)}</section>`;
 }
 
@@ -1817,6 +1854,25 @@ const ACTIONS = {
     sound('success'); toast(`💾 Profil de ${name} enregistré`, 'success'); render(true);
   },
   addItem(d) { sound('click'); openItemEditor(d.kind, null); },
+  toggleEdit(d) { view[d.key] = !view[d.key]; sound('click'); render(true); },
+  async setTotal() {
+    const cid = view.fixChild, p = state.profiles[cid];
+    const raw = String(view.form.fixTotal == null ? '' : view.form.fixTotal).trim();
+    const target = int(raw, -1);
+    if (raw === '' || target < 0 || target > 100000) { sound('error'); toast('Indiquez un total valide (0 ou plus)', 'error'); return; }
+    const cur = state.scores[cid].points;
+    if (target === cur) { toast(`${p.name} a déjà ${cur} ⭐`, 'info'); return; }
+    const ok = await modal({ emoji: '🧮', title: `${p.name} : ${cur} ⭐ → ${target} ⭐ ?`, text: 'La correction sera notée dans le journal.', yesLabel: '✔️ Appliquer', yesClass: 'btn-blue' });
+    if (!ok) return;
+    let before = cur;
+    const res = await txn('scores/' + cid, c => { const x = c || { points: 0, yellow: false }; before = Math.max(0, int(x.points)); return { points: target, yellow: !!x.yellow }; });
+    if (!res.committed) return;
+    const diff = target - before;
+    if (diff !== 0) addLog({ childId: cid, type: diff > 0 ? 'gain' : 'malus', emoji: '🧮', label: `Correction du total (${before} → ${target})`, points: Math.abs(diff), by: who() });
+    view.form.fixTotal = '';
+    parentSound('success'); toast(`🧮 ${p.name} a maintenant ${target} ⭐`, 'success');
+    render(true);
+  },
   editItem(d) { sound('click'); openItemEditor(d.kind, d.id); },
   exportData() {
     const data = Object.assign({ exportedAt: new Date().toISOString(), app: 'mini-heros' }, clone(state));
